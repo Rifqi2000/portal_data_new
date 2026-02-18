@@ -10,6 +10,8 @@ const authRoutes = require("./modules/auth/auth.routes");
 const datasetRoutes = require("./modules/datasets/datasets.routes");
 const approvalRoutes = require("./modules/approvals/approvals.routes");
 const uploadRoutes = require("./modules/uploads/uploads.routes");
+const dashboardRoutes = require("./modules/dashboard/dashboard.routes");
+
 
 function createApp() {
   const app = express();
@@ -75,6 +77,7 @@ function createApp() {
   app.use("/api/datasets", datasetRoutes);
   app.use("/api/approvals", approvalRoutes);
   app.use("/api/uploads", uploadRoutes);
+  app.use("/api/dashboard", dashboardRoutes);
 
   // ==============================
   // Error Handler

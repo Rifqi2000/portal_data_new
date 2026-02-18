@@ -1,8 +1,8 @@
-import http from "./http";
+import { api } from "../lib/api";
 
 export const authApi = {
-  login: (payload) => http.post("/auth/login", payload),
-  me: () => http.get("/auth/me"),
-  refresh: (payload) => http.post("/auth/refresh", payload),
-  logout: (payload) => http.post("/auth/logout", payload),
+  login: (payload) => api.post("/auth/login", payload),
+  me: () => api.get("/auth/me"),
+  refresh: (payload) => api.post("/auth/refresh", payload),
+  logout: (payload) => api.post("/auth/logout", payload),
 };

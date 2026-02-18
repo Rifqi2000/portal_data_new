@@ -1,9 +1,10 @@
-const ACCESS_KEY = "pd_access";
-const REFRESH_KEY = "pd_refresh";
+// src/utils/storage.js
+const ACCESS_KEY = "pd_access_token";
+const REFRESH_KEY = "pd_refresh_token";
 
-export function setTokens(access, refresh) {
-  localStorage.setItem(ACCESS_KEY, access);
-  localStorage.setItem(REFRESH_KEY, refresh);
+export function setTokens(accessToken, refreshToken) {
+  if (accessToken) localStorage.setItem(ACCESS_KEY, String(accessToken));
+  if (refreshToken) localStorage.setItem(REFRESH_KEY, String(refreshToken));
 }
 
 export function getAccessToken() {
