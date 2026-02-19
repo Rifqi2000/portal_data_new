@@ -1,17 +1,19 @@
-import { AppBar, Toolbar, Typography, Box, Button } from "@mui/material";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/useAuth";
+import { Button } from "@mui/material";
 
 export default function Topbar() {
-  return (
-    <AppBar position="fixed" color="default" elevation={1}>
-      <Toolbar sx={{ display: "flex", justifyContent: "space-between" }}>
-        <Typography fontWeight={800}>Portal Data DPRKP</Typography>
+  const nav = useNavigate();
+  const { logout } = useAuth();
 
-        <Box>
-          <Button variant="outlined" size="small">
-            Logout
-          </Button>
-        </Box>
-      </Toolbar>
-    </AppBar>
+  const onLogout = async () => {
+    await logout(false);
+    nav("/login", { replace: true });
+  };
+
+  return (
+    <Button variant="outlined" onClick={onLogout}>
+      LOGOUT
+    </Button>
   );
 }

@@ -1,18 +1,47 @@
 // src/lib/api.js
 import axios from "axios";
-import { getAccessToken, getRefreshToken, setTokens, clearTokens } from "../utils/storage";
+import {
+  getAccessToken,
+  getRefreshToken,
+  setTokens,
+  clearTokens,
+} from "../utils/storage";
 
 const baseURL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
+// axios instance untuk API utama (pakai interceptor)
 export const api = axios.create({
   baseURL,
   headers: { "Content-Type": "application/json" },
 });
 
+// axios instance khusus auth/refresh (TANPA interceptor) supaya tidak loop
+const plain = axios.create({
+  baseURL,
+  headers: { "Content-Type": "application/json" },
+});
+
+// Helper: ambil token dari berbagai bentuk response backend
+function extractTokens(resData) {
+  // dukung: { data: { access_token } } atau { access_token } atau variasi camelCase
+  const payload = resData?.data ?? resData ?? {};
+
+  const access =
+    payload.access_token ?? payload.accessToken ?? payload.token ?? null;
+
+  const refresh =
+    payload.refresh_token ?? payload.refreshToken ?? payload.refresh ?? null;
+
+  return { access, refresh };
+}
+
 // 1) inject access token ke setiap request
 api.interceptors.request.use((config) => {
   const token = getAccessToken();
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
   return config;
 });
 
@@ -28,25 +57,47 @@ function resolveQueue(error, token = null) {
   queue = [];
 }
 
+// helper: jangan refresh untuk endpoint auth sendiri
+function isAuthEndpoint(url = "") {
+  // url bisa relative (/auth/login) atau full (http://.../auth/login)
+  return (
+    url.includes("/auth/login") ||
+    url.includes("/auth/refresh") ||
+    url.includes("/auth/logout")
+  );
+}
+
 // 2) auto refresh saat 401
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
-    const originalRequest = error.config;
     const status = error?.response?.status;
+    const originalRequest = error?.config;
 
-    // kalau bukan 401 -> lempar
-    if (status !== 401) throw error;
+    // kalau tidak ada config atau bukan 401 -> lempar
+    if (!originalRequest || status !== 401) {
+      return Promise.reject(error);
+    }
 
-    // mencegah retry berkali-kali
-    if (originalRequest._retry) throw error;
+    // jangan coba refresh untuk endpoint auth itu sendiri (hindari loop)
+    if (isAuthEndpoint(originalRequest.url)) {
+      clearTokens();
+      return Promise.reject(error);
+    }
+
+    // mencegah retry berkali-kali untuk request yang sama
+    if (originalRequest._retry) {
+      return Promise.reject(error);
+    }
     originalRequest._retry = true;
 
     const refreshToken = getRefreshToken();
+
+    // kalau refresh token tidak ada -> paksa logout
     if (!refreshToken) {
       clearTokens();
       window.location.href = "/login";
-      throw error;
+      return Promise.reject(error);
     }
 
     // kalau refresh sedang berjalan, request lain ngantri
@@ -54,6 +105,7 @@ api.interceptors.response.use(
       return new Promise((resolve, reject) => {
         queue.push({ resolve, reject });
       }).then((newAccess) => {
+        originalRequest.headers = originalRequest.headers || {};
         originalRequest.headers.Authorization = `Bearer ${newAccess}`;
         return api(originalRequest);
       });
@@ -62,26 +114,36 @@ api.interceptors.response.use(
     isRefreshing = true;
 
     try {
-      // penting: pakai axios biasa agar tidak kena interceptor api lagi
-      const refreshRes = await axios.post(`${baseURL}/auth/refresh`, {
+      // refresh token (pakai plain axios biar tidak kena interceptor api)
+      const refreshRes = await plain.post("/auth/refresh", {
         refresh_token: refreshToken,
       });
 
-      const newAccess = refreshRes.data?.data?.access_token;
-      const newRefresh = refreshRes.data?.data?.refresh_token || refreshToken;
+      const { access: newAccess, refresh: newRefreshRaw } = extractTokens(
+        refreshRes.data
+      );
 
-      if (!newAccess) throw new Error("Refresh success tapi access_token kosong");
+      const newRefresh = newRefreshRaw || refreshToken;
 
+      if (!newAccess) {
+        throw new Error("Refresh response tidak mengandung access token");
+      }
+
+      // simpan token baru
       setTokens(newAccess, newRefresh);
+
+      // lepaskan antrian request
       resolveQueue(null, newAccess);
 
+      // ulang request awal dengan token baru
+      originalRequest.headers = originalRequest.headers || {};
       originalRequest.headers.Authorization = `Bearer ${newAccess}`;
       return api(originalRequest);
     } catch (err) {
       resolveQueue(err, null);
       clearTokens();
       window.location.href = "/login";
-      throw err;
+      return Promise.reject(err);
     } finally {
       isRefreshing = false;
     }

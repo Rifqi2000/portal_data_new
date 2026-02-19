@@ -4,42 +4,41 @@ import { clearTokens, getAccessToken, getRefreshToken, setTokens } from "../util
 
 export const AuthContext = createContext(null);
 
-/**
- * Hook helper supaya komponen tidak import useContext manual.
- * Kalau provider belum kepasang, return null (biar bisa fallback).
- */
 export function useAuth() {
   return useContext(AuthContext);
 }
 
-/**
- * AuthProvider
- * - memanggil /auth/me saat app start (kalau ada token)
- * - login => simpan token + setUser
- * - logout => panggil endpoint logout (opsional) lalu clear tokens
- */
 export default function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  /**
+   * Ambil user dari /auth/me jika ada access token.
+   * - Jika token invalid dan refresh gagal, interceptor akan clearTokens + redirect (atau minimal 401)
+   * - Kita tetap amankan dengan clearTokens kalau /me gagal
+   */
   async function refreshMe() {
-    const access = getAccessToken?.() || null;
+    const access = getAccessToken();
 
-    // Kalau tidak ada token, jangan call /me (biar ga spam 401)
+    // Kalau tidak ada token, tidak perlu call /me
     if (!access) {
       setUser(null);
       setLoading(false);
-      return;
+      return null;
     }
 
+    setLoading(true);
     try {
       const res = await authApi.me();
-      // backend kamu kadang return { user } atau langsung object user
-      const u = res.data?.data?.user ?? res.data?.data ?? null;
+      // backend: ok(res, req.user, "OK") => user ada di res.data.data
+      const u = res.data?.data ?? null;
       setUser(u);
+      return u;
     } catch (e) {
-      // kalau token invalid/expired
+      // token invalid / expired dan refresh juga gagal
+      clearTokens();
       setUser(null);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -51,9 +50,10 @@ export default function AuthProvider({ children }) {
   }, []);
 
   /**
-   * login(username, password)
-   * NOTE: kamu sebelumnya pakai login(username,password)
-   * jadi aku pertahankan signature itu agar LoginPage kamu tidak perlu ubah banyak.
+   * login
+   * - simpan token
+   * - set user dari response (kalau ada)
+   * - kalau user tidak ada di response, fallback panggil /me
    */
   async function login(username, password) {
     const res = await authApi.login({ username, password });
@@ -69,30 +69,46 @@ export default function AuthProvider({ children }) {
     }
 
     setTokens(access, refresh);
-    setUser(u);
 
-    return u;
+    // kalau backend sudah kirim user, pakai itu
+    if (u) {
+      setUser(u);
+      setLoading(false);
+      return u;
+    }
+
+    // fallback: ambil user dari /me (lebih konsisten)
+    const me = await refreshMe();
+    return me;
   }
 
   /**
-   * logout(refresh_token, all_devices=false)
-   * - kalau refresh_token tidak dikirim, ambil dari storage
+   * logout (protected)
+   * - gunakan refresh_token dari storage untuk revoke (current device)
+   * - tetap clear local walau server error
    */
-  async function logout(refresh_token, all_devices = false) {
-    const rt = refresh_token || (getRefreshToken?.() || null);
+// src/auth/AuthProvider.jsx
+  async function logout(all_devices = false) {
+    const rt = getRefreshToken?.() || null;
 
     try {
-      // kalau backend kamu butuh refresh_token untuk revoke
+      // endpoint logout protected => butuh Authorization Bearer access token (sudah di api interceptor)
+      // kirim refresh_token supaya server revoke token device ini
       if (rt) {
         await authApi.logout({ refresh_token: rt, all_devices });
       }
-    } catch {
-      // ignore error logout server (tetap clear local)
+    } catch (e) {
+      // abaikan error server, yang penting local session bersih
     } finally {
       clearTokens();
       setUser(null);
+      // pakai navigate di komponen yang memanggil (lebih bersih)
     }
   }
+
+
+  // ✅ penting: isAuthenticated sebaiknya cek token, bukan user
+  const isAuthenticated = !!getAccessToken();
 
   const value = useMemo(
     () => ({
@@ -101,7 +117,7 @@ export default function AuthProvider({ children }) {
       login,
       logout,
       refreshMe,
-      isAuthenticated: !!user,
+      isAuthenticated,
     }),
     [user, loading]
   );

@@ -108,20 +108,19 @@ async function loginService(payload, meta = {}) {
 
 /**
  * REFRESH (ROTATE)
- * - verify refresh token signature
- * - cek token hash ada di DB, belum revoked, belum expired
- * - buat access token baru + refresh token baru
- * - insert refresh token baru
- * - revoke token lama + set replaced_by
+ * Controller memanggil: refreshService(req.body, meta)
+ * Body bentuknya: { refresh_token: "..." }
  */
-async function refreshService(refreshToken, meta = {}) {
+async function refreshService(body, meta = {}) {
+  const refreshToken = body?.refresh_token;
+
   if (!refreshToken) {
     const err = new Error("refresh_token is required.");
     err.code = "P0001";
     throw err;
   }
 
-  // 1) Verify JWT refresh token signature
+  // 1) Verify refresh token signature
   let payload;
   try {
     payload = verifyRefreshToken(refreshToken);
@@ -131,9 +130,16 @@ async function refreshService(refreshToken, meta = {}) {
     throw err;
   }
 
+  // opsional tapi bagus: pastikan memang refresh token
+  if (payload?.typ !== "refresh") {
+    const err = new Error("Invalid refresh token type.");
+    err.code = "P0001";
+    throw err;
+  }
+
   const refreshHash = hashToken(refreshToken);
 
-  // 2) Cari token di DB
+  // 2) Cari token lama di DB
   const old = (
     await pool.query(
       `
@@ -164,7 +170,7 @@ async function refreshService(refreshToken, meta = {}) {
     throw err;
   }
 
-  // Optional: pastikan token ini milik user yang sama dengan payload
+  // pastikan token milik user yang sama
   if (String(old.user_id) !== String(payload.user_id)) {
     const err = new Error("Refresh token does not match user.");
     err.code = "P0001";
@@ -189,7 +195,7 @@ async function refreshService(refreshToken, meta = {}) {
   const newHash = hashToken(newRefreshToken);
   const expiresAt = addDays(new Date(), 7);
 
-  // 4) Rotate within transaction
+  // 4) Rotate token dalam transaction
   await pool.query("BEGIN");
   try {
     const inserted = (
@@ -226,13 +232,11 @@ async function refreshService(refreshToken, meta = {}) {
 }
 
 /**
- * LOGOUT
+ * LOGOUT (protected)
+ * Controller memanggil: logoutService(req.user, refreshToken, allDevices)
+ *
  * - update last_logout
  * - revoke refresh token (device ini) atau semua device
- *
- * Catatan:
- * - Logout idealnya memerlukan refresh_token untuk revoke device ini
- * - Kalau all_devices=true, revoke semua token user
  */
 async function logoutService(user, refreshToken, allDevices = false) {
   if (!user?.user_id) {
@@ -245,6 +249,7 @@ async function logoutService(user, refreshToken, allDevices = false) {
     user.user_id,
   ]);
 
+  // revoke semua device
   if (allDevices) {
     await pool.query(
       `
@@ -258,6 +263,7 @@ async function logoutService(user, refreshToken, allDevices = false) {
     return { revoked: "ALL_DEVICES" };
   }
 
+  // revoke device ini (butuh refresh_token)
   if (!refreshToken) {
     const err = new Error(
       "refresh_token is required for single-device logout (or set all_devices=true)."

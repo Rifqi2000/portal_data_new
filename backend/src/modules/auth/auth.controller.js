@@ -1,3 +1,4 @@
+// src/modules/auth/auth.controller.js
 const { ok } = require("../../utils/response");
 const { loginService, refreshService, logoutService } = require("./auth.service");
 
@@ -25,9 +26,19 @@ async function refresh(req, res, next) {
   }
 }
 
+/**
+ * LOGOUT (protected)
+ * - ambil user dari req.user (hasil authJwt)
+ * - ambil refresh_token & all_devices dari body
+ */
 async function logout(req, res, next) {
   try {
-    const data = await logoutService(req.body);
+    const refreshToken = req.body?.refresh_token || null;
+    const allDevices = !!req.body?.all_devices;
+
+    // req.user berasal dari authJwt middleware
+    const data = await logoutService(req.user, refreshToken, allDevices);
+
     return ok(res, data, "Logout success");
   } catch (err) {
     return next(err);

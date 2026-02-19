@@ -1,3 +1,4 @@
+// src/pages/DashboardPage.jsx
 import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   Box,
@@ -21,9 +22,19 @@ import {
   Chip,
   CircularProgress,
   Alert,
+  Divider,
+  Skeleton,
 } from "@mui/material";
 import { BarChart } from "@mui/x-charts/BarChart";
+import RestartAltRoundedIcon from "@mui/icons-material/RestartAltRounded";
+import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import HourglassBottomRoundedIcon from "@mui/icons-material/HourglassBottomRounded";
+import CancelRoundedIcon from "@mui/icons-material/CancelRounded";
+import Inventory2RoundedIcon from "@mui/icons-material/Inventory2Rounded";
+
 import { api } from "../lib/api";
+import { COLORS } from "../app/theme";
 
 const STATUS_OPTIONS = [
   { value: "", label: "Semua Status" },
@@ -49,6 +60,77 @@ function statusChipColor(s) {
   return "default";
 }
 
+function monthLabel(m) {
+  const mm = Number(m);
+  const names = [
+    "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+    "Jul", "Agu", "Sep", "Okt", "Nov", "Des",
+  ];
+  return names[mm - 1] || String(m);
+}
+
+function SummaryCard({ title, value, loading, icon, accent = "navy" }) {
+  const accentMap = {
+    green: { bg: "rgba(46,125,50,0.10)", color: COLORS.green },
+    orange: { bg: "rgba(245,124,0,0.10)", color: COLORS.orange },
+    navy: { bg: "rgba(11,58,83,0.08)", color: COLORS.navy },
+    red: { bg: "rgba(211,47,47,0.10)", color: "#D32F2F" },
+  };
+  const a = accentMap[accent] || accentMap.navy;
+
+  return (
+    <Card
+      sx={{
+        height: "100%",
+        overflow: "hidden",
+        position: "relative",
+      }}
+    >
+      {/* accent bar */}
+      <Box
+        sx={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 6,
+          bgcolor: a.color,
+          opacity: 0.9,
+        }}
+      />
+      <CardContent sx={{ pl: 2.6 }}>
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
+          <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 700 }}>
+            {title}
+          </Typography>
+
+          <Box
+            sx={{
+              width: 38,
+              height: 38,
+              borderRadius: 2,
+              bgcolor: a.bg,
+              color: a.color,
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            {icon}
+          </Box>
+        </Box>
+
+        <Typography variant="h4" sx={{ fontWeight: 900, color: "text.primary" }}>
+          {loading ? <Skeleton width={64} /> : value}
+        </Typography>
+
+        <Typography variant="caption" sx={{ color: "text.secondary" }}>
+          Update real-time dari sistem
+        </Typography>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function DashboardPage() {
   const now = new Date();
   const nowMonth = now.getMonth() + 1;
@@ -70,7 +152,7 @@ export default function DashboardPage() {
 
   const [filters, setFilters] = useState({
     month: nowMonth,
-    periode_data: "", // opsional (kalau backend sudah support list periode, nanti bisa dibuat dropdown)
+    periode_data: "",
     status: "",
     year: nowYear,
   });
@@ -93,8 +175,7 @@ export default function DashboardPage() {
   }, [schedule.total, schedule.limit]);
 
   const barData = useMemo(() => {
-    // xCharts butuh array kategori + data series
-    const labels = (charts.uploads_by_month || []).map((x) => x.month);
+    const labels = (charts.uploads_by_month || []).map((x) => monthLabel(x.month));
     const values = (charts.uploads_by_month || []).map((x) => Number(x.count || 0));
     return { labels, values };
   }, [charts.uploads_by_month]);
@@ -131,9 +212,8 @@ export default function DashboardPage() {
         if (filters.status) params.status = filters.status;
 
         const res = await api.get("/dashboard/schedule", { params });
-
-        // pastikan shape aman
         const data = res.data?.data || {};
+
         setSchedule((prev) => ({
           ...prev,
           items: data.items || [],
@@ -166,6 +246,7 @@ export default function DashboardPage() {
 
       const res = await api.get("/dashboard/charts", { params });
       const data = res.data?.data || {};
+
       setCharts({
         uploads_by_month: data.uploads_by_month || [],
         top_downloaded: data.top_downloaded || [],
@@ -189,7 +270,7 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // reload saat filter berubah
+  // reload when filters change
   useEffect(() => {
     loadSchedule(1);
     loadCharts();
@@ -205,17 +286,40 @@ export default function DashboardPage() {
     });
   };
 
+  const isAnyLoading = loading.summary || loading.schedule || loading.charts;
+
   return (
-    <Container maxWidth="lg" sx={{ py: 4 }}>
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
-        <Typography variant="h4" fontWeight={800}>
+    <Container maxWidth="lg" sx={{ py: { xs: 2, md: 3 } }}>
+      {/* Header */}
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="h4" sx={{ fontWeight: 900, color: COLORS.navy }}>
           Dashboard
+        </Typography>
+        <Typography sx={{ color: "text.secondary" }}>
+          Ringkasan pengumpulan data, jadwal, dan aktivitas unduhan.
         </Typography>
       </Box>
 
-      {/* FILTER BAR */}
-      <Card sx={{ mb: 3 }}>
-        <CardContent>
+      {/* Filters */}
+      <Card
+        sx={{
+          mb: 3,
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
+        <Box
+          sx={{
+            position: "absolute",
+            inset: 0,
+            background:
+              "radial-gradient(900px 500px at 10% 10%, rgba(245,124,0,0.10), transparent 55%)," +
+              "radial-gradient(900px 500px at 80% 30%, rgba(46,125,50,0.10), transparent 55%)," +
+              "radial-gradient(900px 600px at 50% 90%, rgba(11,58,83,0.10), transparent 55%)",
+            pointerEvents: "none",
+          }}
+        />
+        <CardContent sx={{ position: "relative" }}>
           <Grid container spacing={2} alignItems="center">
             <Grid item xs={12} md={3}>
               <FormControl fullWidth>
@@ -223,11 +327,13 @@ export default function DashboardPage() {
                 <Select
                   label="Bulan"
                   value={filters.month}
-                  onChange={(e) => setFilters((s) => ({ ...s, month: Number(e.target.value) }))}
+                  onChange={(e) =>
+                    setFilters((s) => ({ ...s, month: Number(e.target.value) }))
+                  }
                 >
                   {Array.from({ length: 12 }).map((_, i) => (
                     <MenuItem key={i + 1} value={i + 1}>
-                      {i + 1}
+                      {i + 1} - {monthLabel(i + 1)}
                     </MenuItem>
                   ))}
                 </Select>
@@ -240,7 +346,9 @@ export default function DashboardPage() {
                 <Select
                   label="Status"
                   value={filters.status}
-                  onChange={(e) => setFilters((s) => ({ ...s, status: e.target.value }))}
+                  onChange={(e) =>
+                    setFilters((s) => ({ ...s, status: e.target.value }))
+                  }
                 >
                   {STATUS_OPTIONS.map((o) => (
                     <MenuItem key={o.value} value={o.value}>
@@ -257,7 +365,9 @@ export default function DashboardPage() {
                 <Select
                   label="Tahun"
                   value={filters.year}
-                  onChange={(e) => setFilters((s) => ({ ...s, year: Number(e.target.value) }))}
+                  onChange={(e) =>
+                    setFilters((s) => ({ ...s, year: Number(e.target.value) }))
+                  }
                 >
                   {[nowYear - 2, nowYear - 1, nowYear, nowYear + 1].map((y) => (
                     <MenuItem key={y} value={y}>
@@ -269,98 +379,181 @@ export default function DashboardPage() {
             </Grid>
 
             <Grid item xs={12} md={3} sx={{ display: "flex", gap: 1 }}>
-              <Button variant="outlined" fullWidth onClick={handleReset}>
-                Reset Filter
+              <Button
+                variant="outlined"
+                fullWidth
+                onClick={handleReset}
+                startIcon={<RestartAltRoundedIcon />}
+              >
+                Reset
               </Button>
             </Grid>
 
             <Grid item xs={12}>
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                <Chip label={`Bulan: ${filters.month}`} />
-                <Chip label={`Tahun: ${filters.year}`} />
-                {filters.status && <Chip label={`Status: ${statusLabel(filters.status)}`} />}
-                {filters.periode_data && <Chip label={`Periode: ${filters.periode_data}`} />}
+                <Chip
+                  icon={<CalendarMonthRoundedIcon />}
+                  label={`Bulan: ${filters.month} (${monthLabel(filters.month)})`}
+                  sx={{ fontWeight: 800 }}
+                />
+                <Chip label={`Tahun: ${filters.year}`} sx={{ fontWeight: 800 }} />
+                {filters.status && (
+                  <Chip
+                    label={`Status: ${statusLabel(filters.status)}`}
+                    sx={{ fontWeight: 800 }}
+                  />
+                )}
+                {filters.periode_data && (
+                  <Chip
+                    label={`Periode: ${filters.periode_data}`}
+                    sx={{ fontWeight: 800 }}
+                  />
+                )}
+                {isAnyLoading && (
+                  <Chip
+                    label="Memuat data..."
+                    icon={<CircularProgress size={14} />}
+                    sx={{ fontWeight: 800 }}
+                  />
+                )}
               </Stack>
             </Grid>
           </Grid>
         </CardContent>
       </Card>
 
-      {/* SUMMARY CARDS */}
-      {error.summary && <Alert severity="error" sx={{ mb: 2 }}>{error.summary}</Alert>}
+      {/* Summary */}
+      {error.summary && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error.summary}
+        </Alert>
+      )}
 
       <Grid container spacing={2} sx={{ mb: 3 }}>
-        {[
-          { label: "Data Terkumpul", value: summary?.total ?? 0 },
-          { label: "Diterima", value: summary?.approved ?? 0 },
-          { label: "Menunggu Verifikasi", value: summary?.pending ?? 0 },
-          { label: "Ditolak", value: summary?.rejected ?? 0 },
-        ].map((c) => (
-          <Grid item xs={12} md={3} key={c.label}>
-            <Card>
-              <CardContent>
-                <Typography variant="body2" color="text.secondary">
-                  {c.label}
-                </Typography>
-                <Typography variant="h4" fontWeight={800}>
-                  {loading.summary ? <CircularProgress size={24} /> : c.value}
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-        ))}
+        <Grid item xs={12} md={3}>
+          <SummaryCard
+            title="Data Terkumpul"
+            value={summary?.total ?? 0}
+            loading={loading.summary}
+            accent="navy"
+            icon={<Inventory2RoundedIcon />}
+          />
+        </Grid>
+        <Grid item xs={12} md={3}>
+          <SummaryCard
+            title="Diterima"
+            value={summary?.approved ?? 0}
+            loading={loading.summary}
+            accent="green"
+            icon={<CheckCircleRoundedIcon />}
+          />
+        </Grid>
+        <Grid item xs={12} md={3}>
+          <SummaryCard
+            title="Menunggu Verifikasi"
+            value={summary?.pending ?? 0}
+            loading={loading.summary}
+            accent="orange"
+            icon={<HourglassBottomRoundedIcon />}
+          />
+        </Grid>
+        <Grid item xs={12} md={3}>
+          <SummaryCard
+            title="Ditolak"
+            value={summary?.rejected ?? 0}
+            loading={loading.summary}
+            accent="red"
+            icon={<CancelRoundedIcon />}
+          />
+        </Grid>
       </Grid>
 
-      {/* SCHEDULE + CHARTS */}
+      {/* Schedule + Charts */}
       <Grid container spacing={2}>
-        {/* Jadwal Pengumpulan Data */}
+        {/* Schedule */}
         <Grid item xs={12} md={7}>
-          <Card>
+          <Card sx={{ height: "100%" }}>
             <CardContent>
-              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1 }}>
-                <Typography variant="h6" fontWeight={800}>
-                  Jadwal Pengumpulan Data (Bulan {schedule.month})
-                </Typography>
+              <Box
+                sx={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  mb: 1,
+                }}
+              >
+                <Box>
+                  <Typography variant="h6" sx={{ fontWeight: 900, color: COLORS.navy }}>
+                    Jadwal Pengumpulan Data
+                  </Typography>
+                  <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                    Bulan {schedule.month} • tampil {schedule.limit} per halaman
+                  </Typography>
+                </Box>
                 {loading.schedule && <CircularProgress size={20} />}
               </Box>
 
-              {error.schedule && <Alert severity="error" sx={{ mb: 2 }}>{error.schedule}</Alert>}
+              {error.schedule && (
+                <Alert severity="error" sx={{ mb: 2 }}>
+                  {error.schedule}
+                </Alert>
+              )}
 
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Nama Dataset</TableCell>
-                    <TableCell>Periode</TableCell>
-                    <TableCell>Frekuensi</TableCell>
-                    <TableCell>Status</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {schedule.items?.length ? (
-                    schedule.items.map((r) => (
-                      <TableRow key={r.dataset_id}>
-                        <TableCell sx={{ fontWeight: 600 }}>{r.nama_dataset}</TableCell>
-                        <TableCell>{r.periode_data || "-"}</TableCell>
-                        <TableCell>{r.frekuensi_update || "-"}</TableCell>
-                        <TableCell>
-                          <Chip
-                            size="small"
-                            label={statusLabel(r.status)}
-                            color={statusChipColor(r.status)}
-                            variant="outlined"
-                          />
+              <Box
+                sx={{
+                  borderRadius: 3,
+                  overflow: "hidden",
+                  border: "1px solid rgba(0,0,0,0.06)",
+                }}
+              >
+                <Table size="small">
+                  <TableHead>
+                    <TableRow sx={{ bgcolor: "rgba(11,58,83,0.04)" }}>
+                      <TableCell sx={{ fontWeight: 900 }}>Nama Dataset</TableCell>
+                      <TableCell sx={{ fontWeight: 900 }}>Periode</TableCell>
+                      <TableCell sx={{ fontWeight: 900 }}>Frekuensi</TableCell>
+                      <TableCell sx={{ fontWeight: 900 }}>Status</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {loading.schedule ? (
+                      Array.from({ length: schedule.limit }).map((_, idx) => (
+                        <TableRow key={idx}>
+                          <TableCell><Skeleton /></TableCell>
+                          <TableCell><Skeleton /></TableCell>
+                          <TableCell><Skeleton /></TableCell>
+                          <TableCell><Skeleton width={90} /></TableCell>
+                        </TableRow>
+                      ))
+                    ) : schedule.items?.length ? (
+                      schedule.items.map((r) => (
+                        <TableRow key={r.dataset_id} hover>
+                          <TableCell sx={{ fontWeight: 800 }}>
+                            {r.nama_dataset || "-"}
+                          </TableCell>
+                          <TableCell>{r.periode_data || "-"}</TableCell>
+                          <TableCell>{r.frekuensi_update || "-"}</TableCell>
+                          <TableCell>
+                            <Chip
+                              size="small"
+                              label={statusLabel(r.status)}
+                              color={statusChipColor(r.status)}
+                              variant="outlined"
+                              sx={{ fontWeight: 800 }}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={4} align="center" sx={{ color: "text.secondary" }}>
+                          Tidak ada jadwal untuk filter ini.
                         </TableCell>
                       </TableRow>
-                    ))
-                  ) : (
-                    <TableRow>
-                      <TableCell colSpan={4} align="center" sx={{ color: "text.secondary" }}>
-                        Tidak ada jadwal untuk filter ini.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
+                    )}
+                  </TableBody>
+                </Table>
+              </Box>
 
               <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 2 }}>
                 <Pagination
@@ -373,24 +566,43 @@ export default function DashboardPage() {
           </Card>
         </Grid>
 
-        {/* Visualisasi */}
+        {/* Charts */}
         <Grid item xs={12} md={5}>
           <Card sx={{ mb: 2 }}>
             <CardContent>
-              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1 }}>
-                <Typography variant="h6" fontWeight={800}>
-                  Pengumpulan Data per Bulan
-                </Typography>
+              <Box
+                sx={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  mb: 1,
+                }}
+              >
+                <Box>
+                  <Typography variant="h6" sx={{ fontWeight: 900, color: COLORS.navy }}>
+                    Pengumpulan Data per Bulan
+                  </Typography>
+                  <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                    Tahun {filters.year}
+                  </Typography>
+                </Box>
                 {loading.charts && <CircularProgress size={20} />}
               </Box>
 
-              {error.charts && <Alert severity="error" sx={{ mb: 2 }}>{error.charts}</Alert>}
+              {error.charts && (
+                <Alert severity="error" sx={{ mb: 2 }}>
+                  {error.charts}
+                </Alert>
+              )}
 
-              {barData.labels.length ? (
+              {loading.charts ? (
+                <Skeleton variant="rounded" height={260} />
+              ) : barData.labels.length ? (
                 <BarChart
                   xAxis={[{ scaleType: "band", data: barData.labels }]}
                   series={[{ data: barData.values, label: "Jumlah Dataset" }]}
                   height={260}
+                  margin={{ left: 50, right: 10, top: 20, bottom: 40 }}
                 />
               ) : (
                 <Typography color="text.secondary">Belum ada data chart.</Typography>
@@ -400,26 +612,56 @@ export default function DashboardPage() {
 
           <Card>
             <CardContent>
-              <Typography variant="h6" fontWeight={800} gutterBottom>
+              <Typography variant="h6" sx={{ fontWeight: 900, color: COLORS.navy }}>
                 Dataset Paling Sering Diunduh
               </Typography>
+              <Typography variant="body2" sx={{ color: "text.secondary", mb: 1.5 }}>
+                Ringkasan aktivitas download.
+              </Typography>
 
-              {charts.top_downloaded?.length ? (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+              <Divider sx={{ mb: 1.5 }} />
+
+              {loading.charts ? (
+                <Stack spacing={1}>
+                  <Skeleton />
+                  <Skeleton />
+                  <Skeleton />
+                </Stack>
+              ) : charts.top_downloaded?.length ? (
+                <Stack spacing={1}>
                   {charts.top_downloaded.map((x) => (
                     <Box
                       key={x.dataset_id}
-                      sx={{ display: "flex", justifyContent: "space-between", gap: 2 }}
+                      sx={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 2,
+                        p: 1.2,
+                        borderRadius: 2,
+                        bgcolor: "rgba(11,58,83,0.04)",
+                      }}
                     >
-                      <Typography variant="body2" sx={{ flex: 1 }} noWrap title={x.nama_dataset}>
+                      <Typography
+                        variant="body2"
+                        sx={{ flex: 1, fontWeight: 800 }}
+                        noWrap
+                        title={x.nama_dataset}
+                      >
                         {x.nama_dataset}
                       </Typography>
-                      <Typography variant="body2" fontWeight={800}>
-                        {Number(x.downloads || 0)}
-                      </Typography>
+
+                      <Chip
+                        size="small"
+                        label={Number(x.downloads || 0)}
+                        sx={{
+                          fontWeight: 900,
+                          bgcolor: "rgba(46,125,50,0.12)",
+                          color: COLORS.green,
+                        }}
+                      />
                     </Box>
                   ))}
-                </Box>
+                </Stack>
               ) : (
                 <Typography color="text.secondary">
                   Belum ada log download (dataset_activity_log action='DOWNLOAD').
