@@ -1,26 +1,18 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+// src/auth/AuthProvider.jsx
+import React, { createContext, useEffect, useMemo, useState, useCallback } from "react";
 import { authApi } from "../api/auth.api";
 import { clearTokens, getAccessToken, getRefreshToken, setTokens } from "../utils/storage";
 
 export const AuthContext = createContext(null);
 
-export function useAuth() {
-  return useContext(AuthContext);
-}
-
 export default function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  /**
-   * Ambil user dari /auth/me jika ada access token.
-   * - Jika token invalid dan refresh gagal, interceptor akan clearTokens + redirect (atau minimal 401)
-   * - Kita tetap amankan dengan clearTokens kalau /me gagal
-   */
-  async function refreshMe() {
+  const refreshMe = useCallback(async () => {
     const access = getAccessToken();
 
-    // Kalau tidak ada token, tidak perlu call /me
+    // kalau tidak ada token: tidak perlu call /me
     if (!access) {
       setUser(null);
       setLoading(false);
@@ -35,26 +27,19 @@ export default function AuthProvider({ children }) {
       setUser(u);
       return u;
     } catch (e) {
-      // token invalid / expired dan refresh juga gagal
+      // token invalid/expired dan refresh gagal -> clear
       clearTokens();
       setUser(null);
       return null;
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     refreshMe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refreshMe]);
 
-  /**
-   * login
-   * - simpan token
-   * - set user dari response (kalau ada)
-   * - kalau user tidak ada di response, fallback panggil /me
-   */
   async function login(username, password) {
     const res = await authApi.login({ username, password });
 
@@ -70,44 +55,33 @@ export default function AuthProvider({ children }) {
 
     setTokens(access, refresh);
 
-    // kalau backend sudah kirim user, pakai itu
+    // kalau user dikirim saat login, langsung set
     if (u) {
       setUser(u);
       setLoading(false);
       return u;
     }
 
-    // fallback: ambil user dari /me (lebih konsisten)
-    const me = await refreshMe();
-    return me;
+    // fallback: ambil dari /me
+    return await refreshMe();
   }
 
-  /**
-   * logout (protected)
-   * - gunakan refresh_token dari storage untuk revoke (current device)
-   * - tetap clear local walau server error
-   */
-// src/auth/AuthProvider.jsx
   async function logout(all_devices = false) {
-    const rt = getRefreshToken?.() || null;
+    const rt = getRefreshToken() || null;
 
     try {
-      // endpoint logout protected => butuh Authorization Bearer access token (sudah di api interceptor)
-      // kirim refresh_token supaya server revoke token device ini
       if (rt) {
         await authApi.logout({ refresh_token: rt, all_devices });
       }
-    } catch (e) {
-      // abaikan error server, yang penting local session bersih
+    } catch {
+      // ignore error server
     } finally {
       clearTokens();
       setUser(null);
-      // pakai navigate di komponen yang memanggil (lebih bersih)
+      setLoading(false);
     }
   }
 
-
-  // ✅ penting: isAuthenticated sebaiknya cek token, bukan user
   const isAuthenticated = !!getAccessToken();
 
   const value = useMemo(
@@ -119,7 +93,7 @@ export default function AuthProvider({ children }) {
       refreshMe,
       isAuthenticated,
     }),
-    [user, loading]
+    [user, loading, isAuthenticated]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

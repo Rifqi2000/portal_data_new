@@ -1,23 +1,19 @@
+// src/App.jsx
 import { Navigate, Route, Routes } from "react-router-dom";
+
 import LoginPage from "./pages/LoginPage";
+import DashboardPage from "./pages/DashboardPage";
+import DatasetsPage from "./pages/DatasetsPage";
 import NotFoundPage from "./pages/NotFoundPage";
+
 import RequireAuth from "./auth/RequireAuth";
 import PublicRoute from "./auth/PublicRoute";
 import MainLayout from "./layout/MainLayout";
-import { getAccessToken } from "./utils/storage";
-
-import DashboardPage from "./pages/DashboardPage";
-import DatasetsPage from "./pages/DatasetsPage";
 
 export default function App() {
-  const hasToken = !!getAccessToken();
-
   return (
     <Routes>
-      {/* default: kalau sudah login => dashboard, kalau belum => login */}
-      <Route path="/" element={<Navigate to={hasToken ? "/dashboard" : "/login"} replace />} />
-
-      {/* public */}
+      {/* Public */}
       <Route
         path="/login"
         element={
@@ -27,7 +23,7 @@ export default function App() {
         }
       />
 
-      {/* protected layout */}
+      {/* Protected (semua halaman setelah login) */}
       <Route
         element={
           <RequireAuth>
@@ -35,10 +31,15 @@ export default function App() {
           </RequireAuth>
         }
       >
+        {/* ✅ default route setelah login */}
+        <Route index element={<Navigate to="/dashboard" replace />} />
+
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/datasets" element={<DatasetsPage />} />
-        {/* route lain taruh sini */}
       </Route>
+
+      {/* Root: arahkan ke dashboard (RequireAuth yang akan meng-handle bila belum login) */}
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
