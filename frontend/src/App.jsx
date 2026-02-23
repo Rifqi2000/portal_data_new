@@ -5,15 +5,16 @@ import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
 import DatasetsPage from "./pages/DatasetsPage";
 import NotFoundPage from "./pages/NotFoundPage";
+import CreateDatasetPage from "./pages/CreateDatasetPage";
 
 import RequireAuth from "./auth/RequireAuth";
+import RequireRole from "./auth/RequireRole";
 import PublicRoute from "./auth/PublicRoute";
 import MainLayout from "./layout/MainLayout";
 
 export default function App() {
   return (
     <Routes>
-      {/* Public */}
       <Route
         path="/login"
         element={
@@ -23,7 +24,6 @@ export default function App() {
         }
       />
 
-      {/* Protected (semua halaman setelah login) */}
       <Route
         element={
           <RequireAuth>
@@ -31,16 +31,23 @@ export default function App() {
           </RequireAuth>
         }
       >
-        {/* ✅ default route setelah login */}
         <Route index element={<Navigate to="/dashboard" replace />} />
 
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/datasets" element={<DatasetsPage />} />
+
+        {/* ✅ hanya BIDANG */}
+        <Route
+          path="/datasets/create"
+          element={
+            <RequireRole allow={["BIDANG"]}>
+              <CreateDatasetPage />
+            </RequireRole>
+          }
+        />
       </Route>
 
-      {/* Root: arahkan ke dashboard (RequireAuth yang akan meng-handle bila belum login) */}
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
-
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );

@@ -14,6 +14,16 @@ function addDays(date, days) {
   return d;
 }
 
+function normUpper(v) {
+  return String(v || "").trim().toUpperCase();
+}
+
+function toIntOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * LOGIN
  * - cek username/password
@@ -22,7 +32,7 @@ function addDays(date, days) {
  * - simpan hash refresh token ke DB
  */
 async function loginService(payload, meta = {}) {
-  const username = (payload?.username || "").trim();
+  const username = String(payload?.username || "").trim();
   const password = String(payload?.password || "");
 
   if (!username || !password) {
@@ -31,17 +41,26 @@ async function loginService(payload, meta = {}) {
     throw err;
   }
 
+  // Catatan:
+  // - kalau user bisa punya banyak role, ini akan ambil 1 role dulu.
+  // - kalau kamu punya kolom priority, ganti ORDER BY-nya pakai priority DESC.
   const q = `
     SELECT
-      u.user_id, u.bidang_id, u.username, u.email,
-      u.password_hash, u.is_active,
+      u.user_id,
+      u.bidang_id,
+      u.username,
+      u.email,
+      u.password_hash,
+      u.is_active,
       r.role_name
     FROM users u
     JOIN user_roles ur ON ur.user_id = u.user_id
     JOIN roles r ON r.role_id = ur.role_id
-    WHERE u.username = $1
+    WHERE LOWER(u.username) = LOWER($1)
+    ORDER BY r.role_name ASC
     LIMIT 1
   `;
+
   const row = (await pool.query(q, [username])).rows[0];
 
   if (!row) {
@@ -63,10 +82,10 @@ async function loginService(payload, meta = {}) {
   }
 
   const basePayload = {
-    user_id: row.user_id,
-    username: row.username,
-    role: row.role_name,
-    bidang_id: row.bidang_id ?? null,
+    user_id: String(row.user_id),
+    username: String(row.username),
+    role: normUpper(row.role_name),     // ✅ pastikan uppercase
+    bidang_id: toIntOrNull(row.bidang_id),
   };
 
   const accessToken = signAccessToken(basePayload);
@@ -77,39 +96,52 @@ async function loginService(payload, meta = {}) {
   });
 
   const refreshHash = hashToken(refreshToken);
+  const expiresAt = addDays(new Date(), 7); // samakan dengan env JWT_REFRESH_EXPIRES_IN kamu
 
-  // MVP: 7 hari (samakan dengan JWT_REFRESH_EXPIRES_IN yang kamu pakai)
-  const expiresAt = addDays(new Date(), 7);
+  // ✅ transaction: insert refresh token + update last_login harus konsisten
+  await pool.query("BEGIN");
+  try {
+    await pool.query(
+      `
+      INSERT INTO refresh_tokens (user_id, token_hash, expires_at, created_ip, user_agent)
+      VALUES ($1::uuid, $2::text, $3::timestamptz, $4::inet, $5::text)
+      `,
+      [
+        row.user_id,
+        refreshHash,
+        expiresAt,
+        meta.ip || null,
+        meta.userAgent || null,
+      ]
+    );
 
-  await pool.query(
-    `
-    INSERT INTO refresh_tokens (user_id, token_hash, expires_at, created_ip, user_agent)
-    VALUES ($1::uuid, $2::text, $3::timestamptz, $4::inet, $5::text)
-    `,
-    [row.user_id, refreshHash, expiresAt, meta.ip || null, meta.userAgent || null]
-  );
+    await pool.query(
+      `UPDATE users SET last_login = NOW() WHERE user_id = $1::uuid`,
+      [row.user_id]
+    );
 
-  await pool.query(`UPDATE users SET last_login = NOW() WHERE user_id = $1::uuid`, [
-    row.user_id,
-  ]);
+    await pool.query("COMMIT");
+  } catch (e) {
+    await pool.query("ROLLBACK");
+    throw e;
+  }
 
   return {
     access_token: accessToken,
     refresh_token: refreshToken,
     user: {
-      user_id: row.user_id,
-      bidang_id: row.bidang_id ?? null,
-      username: row.username,
+      user_id: String(row.user_id),
+      bidang_id: toIntOrNull(row.bidang_id),
+      username: String(row.username),
       email: row.email,
-      role: row.role_name,
+      role: normUpper(row.role_name),
     },
   };
 }
 
 /**
  * REFRESH (ROTATE)
- * Controller memanggil: refreshService(req.body, meta)
- * Body bentuknya: { refresh_token: "..." }
+ * Body: { refresh_token: "..." }
  */
 async function refreshService(body, meta = {}) {
   const refreshToken = body?.refresh_token;
@@ -130,7 +162,6 @@ async function refreshService(body, meta = {}) {
     throw err;
   }
 
-  // opsional tapi bagus: pastikan memang refresh token
   if (payload?.typ !== "refresh") {
     const err = new Error("Invalid refresh token type.");
     err.code = "P0001";
@@ -157,20 +188,16 @@ async function refreshService(body, meta = {}) {
     err.code = "P0001";
     throw err;
   }
-
   if (old.revoked_at) {
     const err = new Error("Refresh token already revoked.");
     err.code = "P0001";
     throw err;
   }
-
   if (new Date(old.expires_at) < new Date()) {
     const err = new Error("Refresh token expired.");
     err.code = "P0001";
     throw err;
   }
-
-  // pastikan token milik user yang sama
   if (String(old.user_id) !== String(payload.user_id)) {
     const err = new Error("Refresh token does not match user.");
     err.code = "P0001";
@@ -179,10 +206,10 @@ async function refreshService(body, meta = {}) {
 
   // 3) Issue new tokens
   const basePayload = {
-    user_id: payload.user_id,
-    username: payload.username,
-    role: payload.role,
-    bidang_id: payload.bidang_id ?? null,
+    user_id: String(payload.user_id),
+    username: String(payload.username || ""),
+    role: normUpper(payload.role),
+    bidang_id: toIntOrNull(payload.bidang_id),
   };
 
   const newAccessToken = signAccessToken(basePayload);
@@ -205,7 +232,13 @@ async function refreshService(body, meta = {}) {
         VALUES ($1::uuid, $2::text, $3::timestamptz, $4::inet, $5::text)
         RETURNING refresh_token_id
         `,
-        [payload.user_id, newHash, expiresAt, meta.ip || null, meta.userAgent || null]
+        [
+          payload.user_id,
+          newHash,
+          expiresAt,
+          meta.ip || null,
+          meta.userAgent || null,
+        ]
       )
     ).rows[0];
 
@@ -233,10 +266,6 @@ async function refreshService(body, meta = {}) {
 
 /**
  * LOGOUT (protected)
- * Controller memanggil: logoutService(req.user, refreshToken, allDevices)
- *
- * - update last_logout
- * - revoke refresh token (device ini) atau semua device
  */
 async function logoutService(user, refreshToken, allDevices = false) {
   if (!user?.user_id) {
@@ -245,11 +274,11 @@ async function logoutService(user, refreshToken, allDevices = false) {
     throw err;
   }
 
-  await pool.query(`UPDATE users SET last_logout = NOW() WHERE user_id = $1::uuid`, [
-    user.user_id,
-  ]);
+  await pool.query(
+    `UPDATE users SET last_logout = NOW() WHERE user_id = $1::uuid`,
+    [user.user_id]
+  );
 
-  // revoke semua device
   if (allDevices) {
     await pool.query(
       `
@@ -263,7 +292,6 @@ async function logoutService(user, refreshToken, allDevices = false) {
     return { revoked: "ALL_DEVICES" };
   }
 
-  // revoke device ini (butuh refresh_token)
   if (!refreshToken) {
     const err = new Error(
       "refresh_token is required for single-device logout (or set all_devices=true)."
