@@ -1,3 +1,7 @@
+// src/modules/uploads/uploads.controller.js
+const fs = require("fs");
+const path = require("path");
+
 const { ok } = require("../../utils/response");
 const { pool } = require("../../config/db");
 const { runWithContext } = require("../../db/runWithContext");
@@ -11,6 +15,7 @@ async function uploadDatasetFile(req, res, next) {
     if (!file) {
       const err = new Error("File is required.");
       err.code = "P0001";
+      err.status = 400;
       throw err;
     }
 
@@ -28,4 +33,59 @@ async function uploadDatasetFile(req, res, next) {
   }
 }
 
-module.exports = { uploadDatasetFile };
+/**
+ * GET /uploads/:dataset_id/files?date=&page=&limit=
+ */
+async function listDatasetFiles(req, res, next) {
+  try {
+    const { dataset_id } = req.params;
+
+    const data = await runWithContext(pool, req.user, null, (db) =>
+      svc.listFiles(db, {
+        datasetId: dataset_id,
+        query: req.query,
+      })
+    );
+
+    return ok(res, data, "OK");
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/**
+ * GET /uploads/file/:file_id/download
+ */
+async function downloadDatasetFile(req, res, next) {
+  try {
+    const { file_id } = req.params;
+
+    const fileRow = await runWithContext(pool, req.user, null, (db) =>
+      svc.getFileById(db, { fileId: file_id })
+    );
+
+    if (!fileRow) {
+      const err = new Error("File not found.");
+      err.code = "P0001";
+      err.status = 404;
+      throw err;
+    }
+
+    // schema kamu: storage_path
+    const filePath = fileRow.storage_path;
+    if (!filePath || !fs.existsSync(filePath)) {
+      const err = new Error("File missing on storage.");
+      err.code = "P0001";
+      err.status = 404;
+      throw err;
+    }
+
+    res.setHeader("Content-Type", fileRow.mime_type || "application/octet-stream");
+    const downloadName = fileRow.file_name || path.basename(filePath);
+    return res.download(filePath, downloadName);
+  } catch (err) {
+    return next(err);
+  }
+}
+
+module.exports = { uploadDatasetFile, listDatasetFiles, downloadDatasetFile };

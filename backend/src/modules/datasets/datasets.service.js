@@ -83,18 +83,6 @@ function mapPeriodePemutakhiran(v) {
  * - BIDANG, KEPALA_BIDANG => hanya bidang sendiri
  * - PUSDATIN, KEPALA_PUSDATIN => semua
  */
-function getRoleUpper(user) {
-  // dukung beberapa bentuk payload user
-  // user.role, user.role_name, user.roles[]
-  const direct = normUpper(user?.role || user?.role_name || "");
-  if (direct) return direct;
-
-  const arr = Array.isArray(user?.roles) ? user.roles : [];
-  // ambil role pertama kalau ada
-  const first = arr.length ? normUpper(arr[0]) : "";
-  return first;
-}
-
 function hasRole(user, role) {
   const target = normUpper(role);
   const direct = normUpper(user?.role || user?.role_name || "");
@@ -157,8 +145,6 @@ async function list(db, query, reqUser) {
   const { status, q, page = 1, limit = 10 } = query;
 
   // ---- RBAC ----
-  // BIDANG + KEPALA_BIDANG => harus punya bidang_id dan filter d.bidang_id
-  // PUSDATIN + KEPALA_PUSDATIN => boleh semua (tanpa filter bidang)
   const isBidangLike = hasRole(reqUser, "BIDANG") || hasRole(reqUser, "KEPALA_BIDANG");
   const canSeeAll = hasRole(reqUser, "PUSDATIN") || hasRole(reqUser, "KEPALA_PUSDATIN");
 
@@ -172,10 +158,9 @@ async function list(db, query, reqUser) {
     }
   }
 
-  // kalau role lain tidak dikenal: paling aman => treat seperti bidang (kalau ada), kalau tidak => deny
   if (!canSeeAll && !isBidangLike) {
     if (bidangId) {
-      // ok, filter by bidang saja
+      // treat like bidang
     } else {
       const err = new Error("Role not allowed to list datasets.");
       err.code = "P0001";
@@ -193,7 +178,6 @@ async function list(db, query, reqUser) {
 
   // ✅ RBAC WHERE
   if (!canSeeAll) {
-    // BIDANG / KEPALA_BIDANG / role lain yang diperlakukan seperti bidang
     vals.push(Number(bidangId));
     where.push(`d.bidang_id = $${vals.length}::int4`);
   }
@@ -295,7 +279,8 @@ async function detail(db, datasetId) {
     )
   ).rows[0];
 
-  return { dataset: ds, columns, active_file: null, stats };
+  // ✅ supaya FE gampang: dataset langsung berisi field2 penting (jenis_data, status, access_level, dll)
+  return { ...ds, columns, active_file: null, stats };
 }
 
 // =========================
@@ -356,7 +341,8 @@ async function create(db, payload, reqUser) {
   if (!deskripsiDataset) throw Object.assign(new Error("Deskripsi/Definisi dataset wajib diisi."), { code: "P0001" });
   if (!jenisData) throw Object.assign(new Error("jenis_data wajib: TERSTRUKTUR / TIDAK_TERSTRUKTUR"), { code: "P0001" });
   if (!accessLevel) throw Object.assign(new Error("hak_akses wajib: TERBUKA / TERBATAS / RAHASIA"), { code: "P0001" });
-  if (!periodePemutakhiran) throw Object.assign(new Error("periode_pemutakhiran wajib sesuai opsi yang diizinkan."), { code: "P0001" });
+  if (!periodePemutakhiran)
+    throw Object.assign(new Error("periode_pemutakhiran wajib sesuai opsi yang diizinkan."), { code: "P0001" });
   if (!spasialStatus) throw Object.assign(new Error("spasial wajib: SPASIAL / NON_SPASIAL"), { code: "P0001" });
 
   // kategori sesuai jenis_data
@@ -408,8 +394,7 @@ async function create(db, payload, reqUser) {
   // unik nama kolom
   const setNames = new Set();
   for (const c of cleanedCols) {
-    if (setNames.has(c.nama_kolom))
-      throw Object.assign(new Error(`Duplikat nama_kolom: ${c.nama_kolom}`), { code: "P0001" });
+    if (setNames.has(c.nama_kolom)) throw Object.assign(new Error(`Duplikat nama_kolom: ${c.nama_kolom}`), { code: "P0001" });
     setNames.add(c.nama_kolom);
   }
 
@@ -537,7 +522,8 @@ async function create(db, payload, reqUser) {
 }
 
 // =========================
-// PREVIEW (TERSTRUKTUR ONLY)
+// PREVIEW (TERSTRUKTUR ONLY) - dari tabel fisik ds_*
+// exclude: id, created_at
 // =========================
 async function preview(db, datasetId, query) {
   const limit = Math.min(200, Math.max(1, Number(query?.limit || 50)));
@@ -556,28 +542,70 @@ async function preview(db, datasetId, query) {
   if (normUpper(ds.jenis_data) !== "TERSTRUKTUR")
     throw Object.assign(new Error("Preview hanya tersedia untuk dataset TERSTRUKTUR."), { code: "P0001" });
 
+  // nama tabel fisik: ds_<uuid tanpa dash>
+  const physicalTable = makePhysicalTableName(datasetId); // ds_xxx
+
+  // ambil kolom tabel fisik (exclude id, created_at)
+  const colsRes = await db.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'portal_data'
+      AND table_name = $1::text
+    ORDER BY ordinal_position ASC
+    `,
+    [physicalTable]
+  );
+
+  const allCols = colsRes.rows.map((r) => r.column_name);
+  const dataCols = allCols.filter(
+    (c) => !["id", "created_at"].includes(String(c).toLowerCase())
+  );
+
+  if (!dataCols.length) {
+    return {
+      dataset: ds,
+      columns: [],
+      rows: [],
+      pagination: { limit, offset, total: 0 },
+      source: { physical_table: `portal_data.${physicalTable}` },
+    };
+  }
+
+  // buat SELECT "COL1","COL2",...
+  const selectList = dataCols.map((c) => `"${c.replace(/"/g, '""')}"`).join(", ");
+
   const total =
     (
       await db.query(
-        `SELECT COUNT(*)::int AS total
-         FROM portal_data.dataset_records
-         WHERE dataset_id = $1::uuid`,
-        [datasetId]
+        `SELECT COUNT(*)::int AS total FROM portal_data."${physicalTable}"`,
+        []
       )
     ).rows[0]?.total ?? 0;
 
-  const items = (
+  // order by id desc jika ada id
+  const hasId = allCols.some((c) => String(c).toLowerCase() === "id");
+  const orderBy = hasId ? `ORDER BY id DESC` : ``;
+
+  const rows = (
     await db.query(
-      `SELECT record_id, record_data, created_at
-       FROM portal_data.dataset_records
-       WHERE dataset_id = $1::uuid
-       ORDER BY created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [datasetId, limit, offset]
+      `
+      SELECT ${selectList}
+      FROM portal_data."${physicalTable}"
+      ${orderBy}
+      LIMIT $1 OFFSET $2
+      `,
+      [limit, offset]
     )
   ).rows;
 
-  return { dataset: ds, items, pagination: { limit, offset, total } };
+  return {
+    dataset: ds,
+    columns: dataCols,
+    rows,
+    pagination: { limit, offset, total },
+    source: { physical_table: `portal_data.${physicalTable}` },
+  };
 }
 
 // =========================
@@ -608,10 +636,9 @@ async function buildTemplateCsv(db, datasetId) {
   ).rows.map((r) => r.nama_kolom);
 
   if (!cols.length)
-    throw Object.assign(
-      new Error("Dataset columns kosong. Silakan definisikan dataset_columns terlebih dahulu."),
-      { code: "P0001" }
-    );
+    throw Object.assign(new Error("Dataset columns kosong. Silakan definisikan dataset_columns terlebih dahulu."), {
+      code: "P0001",
+    });
 
   return cols.map(csvEscape).join(",") + "\n";
 }
@@ -635,10 +662,7 @@ async function approveKabid(db, datasetId) {
 }
 
 async function rejectKabid(db, datasetId, reason) {
-  const r = await db.query(
-    `SELECT * FROM portal_data.fn_reject_kabid($1::uuid, $2::text)`,
-    [datasetId, reason]
-  );
+  const r = await db.query(`SELECT * FROM portal_data.fn_reject_kabid($1::uuid, $2::text)`, [datasetId, reason]);
   return r.rows[0];
 }
 
@@ -648,10 +672,7 @@ async function verifyPusdatin(db, datasetId) {
 }
 
 async function rejectPusdatin(db, datasetId, reason) {
-  const r = await db.query(
-    `SELECT * FROM portal_data.fn_reject_pusdatin($1::uuid, $2::text)`,
-    [datasetId, reason]
-  );
+  const r = await db.query(`SELECT * FROM portal_data.fn_reject_pusdatin($1::uuid, $2::text)`, [datasetId, reason]);
   return r.rows[0];
 }
 

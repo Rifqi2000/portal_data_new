@@ -1,5 +1,5 @@
 // src/pages/DatasetsPage.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   Alert,
   Box,
@@ -12,6 +12,7 @@ import {
   Grid,
   IconButton,
   InputAdornment,
+  Menu,
   MenuItem,
   Paper,
   Select,
@@ -20,6 +21,8 @@ import {
   TextField,
   Typography,
   Tooltip,
+  ListItemIcon,
+  ListItemText,
 } from "@mui/material";
 
 import FilterAltOutlinedIcon from "@mui/icons-material/FilterAltOutlined";
@@ -28,11 +31,15 @@ import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import RestartAltRoundedIcon from "@mui/icons-material/RestartAltRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 
+import MoreHorizOutlinedIcon from "@mui/icons-material/MoreHorizOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
+import CloudUploadOutlinedIcon from "@mui/icons-material/CloudUploadOutlined";
+import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import TimelineOutlinedIcon from "@mui/icons-material/TimelineOutlined";
-import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
-import CloudDownloadOutlinedIcon from "@mui/icons-material/CloudDownloadOutlined";
+import InsertChartOutlinedIcon from "@mui/icons-material/InsertChartOutlined";
+import DeleteOutlineOutlinedIcon from "@mui/icons-material/DeleteOutlineOutlined";
+import CheckCircleOutlineOutlinedIcon from "@mui/icons-material/CheckCircleOutlineOutlined";
 
 import { DataGrid } from "@mui/x-data-grid";
 import { useNavigate, useLocation } from "react-router-dom";
@@ -102,7 +109,7 @@ function toDisplayHakAkses(s) {
     TERBUKA: "Terbuka",
     TERBATAS: "Terbatas",
     RAHASIA: "Rahasia",
-    TERTUTUP: "Tertutup", // legacy (kalau ada)
+    TERTUTUP: "Tertutup",
   };
   return map[x] || (x || "-");
 }
@@ -120,36 +127,181 @@ function extractErrorMessage(json, fallback) {
   return json?.message || json?.error?.message || json?.error || fallback;
 }
 
-// ======= Action buttons (placeholder) =======
-function ActionButtons({ row }) {
+// =======================================================
+// ROUTE TARGETS
+// =======================================================
+const ROUTES = {
+  filesList: (id) => `/datasets/${id}/files`,
+  upload: (id) => `/datasets/${id}/upload`,
+  metadataView: (id) => `/datasets/${id}`,
+  metadataEdit: (id) => `/datasets/${id}/edit`,
+  logs: (id) => `/datasets/${id}/logs`,
+  viz: (id) => `/datasets/${id}/visualize`,
+  approveKabid: (id) => `/datasets/${id}/approve-kabid`,
+  approvePusdatin: (id) => `/datasets/${id}/approve-pusdatin`,
+};
+
+// =======================================================
+// ACTION MENU (titik tiga)
+// =======================================================
+function ActionMenu({ row, roleCtx, onNavigate, onRequestDelete }) {
+  const { isBidang, isKepalaBidang, isPusdatin } = roleCtx;
+
+  const status = normUpper(row?.status);
+  const id = row?.dataset_id;
+
+  // gating status (sesuaikan SOP)
+  const canUpload = isBidang && ["DRAFT", "REJECTED_BY_KABID", "REJECTED_BY_PUSDATIN"].includes(status);
+  const canEditMeta = isBidang && ["DRAFT", "REJECTED_BY_KABID", "REJECTED_BY_PUSDATIN"].includes(status);
+
+  const canApproveKabid = isKepalaBidang && status === "SUBMITTED";
+  const canApprovePusdatin = isPusdatin && status === "APPROVED_BY_KABID";
+
+  // sesuai requirement: hapus hanya KEPALA_BIDANG
+  const canDelete = isKepalaBidang;
+
+  const [anchorEl, setAnchorEl] = useState(null);
+  const open = Boolean(anchorEl);
+
+  const openMenu = (e) => setAnchorEl(e.currentTarget);
+  const closeMenu = () => setAnchorEl(null);
+
+  const go = (path) => {
+    closeMenu();
+    onNavigate(path);
+  };
+
   return (
-    <Stack direction="row" spacing={0.5}>
-      <Tooltip title="Lihat Filedata">
-        <IconButton size="small" onClick={() => console.log("lihat", row)}>
-          <VisibilityOutlinedIcon fontSize="small" />
+    <>
+      <Tooltip title="Aksi">
+        <IconButton
+          size="small"
+          onClick={openMenu}
+          sx={{ p: 0.6, borderRadius: 2 }}
+          aria-label="Aksi"
+        >
+          <MoreHorizOutlinedIcon fontSize="small" />
         </IconButton>
       </Tooltip>
-      <Tooltip title="Update Filedata">
-        <IconButton size="small" onClick={() => console.log("update file", row)}>
-          <CloudDownloadOutlinedIcon fontSize="small" />
-        </IconButton>
-      </Tooltip>
-      <Tooltip title="Edit Metadata">
-        <IconButton size="small" onClick={() => console.log("edit", row)}>
-          <EditOutlinedIcon fontSize="small" />
-        </IconButton>
-      </Tooltip>
-      <Tooltip title="Lihat Metadata">
-        <IconButton size="small" onClick={() => console.log("detail", row)}>
-          <DescriptionOutlinedIcon fontSize="small" />
-        </IconButton>
-      </Tooltip>
-      <Tooltip title="Pelacakan Data">
-        <IconButton size="small" onClick={() => console.log("timeline", row)}>
-          <TimelineOutlinedIcon fontSize="small" />
-        </IconButton>
-      </Tooltip>
-    </Stack>
+
+      <Menu
+        anchorEl={anchorEl}
+        open={open}
+        onClose={closeMenu}
+        transformOrigin={{ horizontal: "right", vertical: "top" }}
+        anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
+        // penting agar menu tidak “ketarik” oleh DataGrid container
+        disablePortal={false}
+      >
+        {/* 1. Lihat Filedata */}
+        <MenuItem onClick={() => go(ROUTES.filesList(id))} dense>
+          <ListItemIcon>
+            <VisibilityOutlinedIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="Lihat Filedata" secondary="Lihat data per tanggal upload" />
+        </MenuItem>
+
+        {/* 2. Upload Filedata (hanya BIDANG) */}
+        {isBidang && (
+          <MenuItem onClick={() => go(ROUTES.upload(id))} dense disabled={!canUpload}>
+            <ListItemIcon>
+              <CloudUploadOutlinedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText
+              primary="Upload Filedata"
+              secondary={canUpload ? "Upload data & unduh template" : "Hanya saat Draft / Ditolak"}
+            />
+          </MenuItem>
+        )}
+
+        <Divider />
+
+        {/* 3. Lihat MetaData */}
+        <MenuItem onClick={() => go(ROUTES.metadataView(id))} dense>
+          <ListItemIcon>
+            <DescriptionOutlinedIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="Lihat Metadata" secondary="Identitas Data & Komponen Data" />
+        </MenuItem>
+
+        {/* 4. Edit MetaData (hanya BIDANG) */}
+        {isBidang && (
+          <MenuItem onClick={() => go(ROUTES.metadataEdit(id))} dense disabled={!canEditMeta}>
+            <ListItemIcon>
+              <EditOutlinedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText
+              primary="Edit Metadata"
+              secondary={canEditMeta ? "Edit identitas & komponen" : "Hanya saat Draft / Ditolak"}
+            />
+          </MenuItem>
+        )}
+
+        <Divider />
+
+        {/* 5. Pelacakan Data */}
+        <MenuItem onClick={() => go(ROUTES.logs(id))} dense>
+          <ListItemIcon>
+            <TimelineOutlinedIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="Pelacakan Data" secondary="Lihat log/kegiatan data" />
+        </MenuItem>
+
+        {/* 6. Visualisasi Data */}
+        <MenuItem onClick={() => go(ROUTES.viz(id))} dense>
+          <ListItemIcon>
+            <InsertChartOutlinedIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="Visualisasi Data" secondary="Buat visualisasi dari kolom data" />
+        </MenuItem>
+
+        {/* 8. Approve Kepala Bidang */}
+        {isKepalaBidang && (
+          <MenuItem onClick={() => go(ROUTES.approveKabid(id))} dense disabled={!canApproveKabid}>
+            <ListItemIcon>
+              <CheckCircleOutlineOutlinedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText
+              primary="Approve Kepala Bidang"
+              secondary={canApproveKabid ? "Review metadata & data" : "Hanya saat Data Diajukan"}
+            />
+          </MenuItem>
+        )}
+
+        {/* 9. Approve Pusdatin */}
+        {isPusdatin && (
+          <MenuItem onClick={() => go(ROUTES.approvePusdatin(id))} dense disabled={!canApprovePusdatin}>
+            <ListItemIcon>
+              <CheckCircleOutlineOutlinedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText
+              primary="Approve Pusdatin"
+              secondary={canApprovePusdatin ? "Final approval" : "Hanya saat Disetujui Kabid"}
+            />
+          </MenuItem>
+        )}
+
+        <Divider />
+
+        {/* 7. Hapus Data (hanya KEPALA_BIDANG) */}
+        {isKepalaBidang && (
+          <MenuItem
+            dense
+            onClick={() => {
+              closeMenu();
+              onRequestDelete(row);
+            }}
+            disabled={!canDelete}
+            sx={{ color: "error.main" }}
+          >
+            <ListItemIcon sx={{ color: "error.main" }}>
+              <DeleteOutlineOutlinedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primary="Hapus Data" secondary="Hapus satu dataset" />
+          </MenuItem>
+        )}
+      </Menu>
+    </>
   );
 }
 
@@ -161,27 +313,29 @@ export default function DatasetsPage() {
   // ===== ROLE detection =====
   const roleUpper = useMemo(() => normUpper(user?.role || user?.role_name), [user]);
 
-  // Support roles array jika ada
   const rolesArrUpper = useMemo(() => {
     const arr = Array.isArray(user?.roles) ? user.roles : [];
     return arr.map((r) => normUpper(r));
   }, [user]);
 
-  const hasRole = (role) => {
-    const r = normUpper(role);
-    if (roleUpper === r) return true;
-    return rolesArrUpper.includes(r);
-  };
+  const hasRole = useCallback(
+    (role) => {
+      const r = normUpper(role);
+      if (roleUpper === r) return true;
+      return rolesArrUpper.includes(r);
+    },
+    [roleUpper, rolesArrUpper]
+  );
+
+  const isBidang = useMemo(() => hasRole("BIDANG"), [hasRole]);
+  const isKepalaBidang = useMemo(() => hasRole("KEPALA_BIDANG"), [hasRole]);
+  const isPusdatin = useMemo(() => hasRole("PUSDATIN") || hasRole("KEPALA_PUSDATIN"), [hasRole]);
 
   // ✅ BIDANG + KEPALA_BIDANG => sama (hanya bidang sendiri)
-  const isBidangLike = useMemo(() => {
-    return hasRole("BIDANG") || hasRole("KEPALA_BIDANG");
-  }, [roleUpper, rolesArrUpper]); // eslint-disable-line react-hooks/exhaustive-deps
+  const isBidangLike = useMemo(() => isBidang || isKepalaBidang, [isBidang, isKepalaBidang]);
 
   // ✅ yang boleh lihat semua
-  const canSeeAll = useMemo(() => {
-    return hasRole("PUSDATIN") || hasRole("KEPALA_PUSDATIN");
-  }, [roleUpper, rolesArrUpper]); // eslint-disable-line react-hooks/exhaustive-deps
+  const canSeeAll = useMemo(() => isPusdatin, [isPusdatin]);
 
   const bidangId = useMemo(() => {
     const v = user?.bidang_id ?? user?.bidangId ?? user?.bidang?.id;
@@ -210,11 +364,14 @@ export default function DatasetsPage() {
 
   // ===== toast =====
   const [toast, setToast] = useState({ open: false, severity: "info", message: "" });
-  const showToast = (severity, message) =>
-    setToast({ open: true, severity, message: String(message) });
+  const showToast = (severity, message) => setToast({ open: true, severity, message: String(message) });
   const closeToast = () => setToast((p) => ({ ...p, open: false }));
 
-  // ===== API query (backend kamu baru dukung: status & q & page & limit) =====
+  // ===== delete confirm (placeholder) =====
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // ===== API query (backend dukung: status & q & page & limit) =====
   const apiQueryParams = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page + 1)); // backend 1-based
@@ -272,7 +429,7 @@ export default function DatasetsPage() {
     }
   };
 
-  // ===== fetch on mount / when query changes (debounce q) =====
+  // fetch on mount / when query changes (debounce q)
   useEffect(() => {
     if (authLoading) return;
     const t = setTimeout(() => fetchDatasets(), 350);
@@ -280,7 +437,7 @@ export default function DatasetsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, apiQueryParams]);
 
-  // ===== auto refresh when coming from CreateDatasetPage =====
+  // auto refresh when coming from CreateDatasetPage
   useEffect(() => {
     if (loc?.state?.refresh) {
       fetchDatasets({ silent: true });
@@ -289,7 +446,7 @@ export default function DatasetsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loc?.state?.refresh]);
 
-  // ===== rows + FE RBAC safety layer + client-side filters =====
+  // rows + FE RBAC safety layer + client-side filters
   const filteredRows = useMemo(() => {
     let rows = items.map((d) => {
       const row = {
@@ -321,12 +478,12 @@ export default function DatasetsPage() {
       };
     });
 
-    // ✅ FE lock: BIDANG + KEPALA_BIDANG hanya bidang sendiri (kecuali canSeeAll)
+    // FE lock: BIDANG + KEPALA_BIDANG hanya bidang sendiri (kecuali canSeeAll)
     if (isBidangLike && !canSeeAll && bidangId != null) {
       rows = rows.filter((r) => Number(r.bidang_id) === Number(bidangId));
     }
 
-    // ===== client-side filters (yang backend belum support) =====
+    // client-side filters (yang backend belum support)
     const ha = normUpper(hakAkses);
     if (ha && ha !== "SEMUA") rows = rows.filter((r) => normUpper(r.access_level) === ha);
 
@@ -345,6 +502,8 @@ export default function DatasetsPage() {
     return rows;
   }, [items, isBidangLike, canSeeAll, bidangId, hakAkses, jenisData, kategori, periodeData, produsen]);
 
+  const roleCtx = useMemo(() => ({ isBidang, isKepalaBidang, isPusdatin }), [isBidang, isKepalaBidang, isPusdatin]);
+
   const gridColumns = useMemo(
     () => [
       { field: "created_at_disp", headerName: "Tanggal Dibuat", flex: 1, minWidth: 170 },
@@ -361,11 +520,20 @@ export default function DatasetsPage() {
         headerName: "Aksi",
         sortable: false,
         filterable: false,
-        minWidth: 220,
-        renderCell: (params) => <ActionButtons row={params.row} />,
+        minWidth: 120,
+        align: "center",
+        headerAlign: "center",
+        renderCell: (params) => (
+          <ActionMenu
+            row={params.row}
+            roleCtx={roleCtx}
+            onNavigate={(path) => nav(path)}
+            onRequestDelete={(row) => setDeleteTarget(row)}
+          />
+        ),
       },
     ],
-    []
+    [nav, roleCtx]
   );
 
   const activeFilters = useMemo(() => {
@@ -394,38 +562,36 @@ export default function DatasetsPage() {
 
   const handleGoCreate = () => nav("/datasets/create");
 
+  // Placeholder delete action (belum panggil API delete)
+  const confirmDelete = async () => {
+    if (!deleteTarget?.dataset_id) return;
+    try {
+      setDeleteLoading(true);
+      showToast("info", `Placeholder: hapus dataset ${deleteTarget.nama_data_disp}`);
+      setDeleteTarget(null);
+    } catch (e) {
+      showToast("error", e?.message || "Gagal hapus dataset.");
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
   return (
     <Box sx={{ maxWidth: 1400, mx: "auto" }}>
       {/* TOAST */}
-      <Snackbar
-        open={toast.open}
-        autoHideDuration={3500}
-        onClose={closeToast}
-        anchorOrigin={{ vertical: "top", horizontal: "right" }}
-      >
+      <Snackbar open={toast.open} autoHideDuration={3500} onClose={closeToast} anchorOrigin={{ vertical: "top", horizontal: "right" }}>
         <Alert onClose={closeToast} severity={toast.severity} variant="filled">
           {toast.message}
         </Alert>
       </Snackbar>
 
       {/* HEADER */}
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: { xs: "flex-start", md: "center" },
-          justifyContent: "space-between",
-          gap: 2,
-          mb: 2,
-          flexWrap: "wrap",
-        }}
-      >
+      <Box sx={{ display: "flex", alignItems: { xs: "flex-start", md: "center" }, justifyContent: "space-between", gap: 2, mb: 2, flexWrap: "wrap" }}>
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 900 }}>
             Kumpulan Dataset
           </Typography>
-          <Typography color="text.secondary">
-            Cari dataset, gunakan filter, lalu kelola metadata & file.
-          </Typography>
+          <Typography color="text.secondary">Cari dataset, gunakan filter, lalu kelola metadata & file.</Typography>
           <Typography variant="caption" sx={{ color: "rgba(2,6,23,0.55)" }}>
             API: <b>{API_BASE || "(belum terbaca)"}</b>
           </Typography>
@@ -461,18 +627,12 @@ export default function DatasetsPage() {
             Refresh
           </Button>
 
-          {/* ✅ hanya tampil untuk BIDANG & KEPALA_BIDANG */}
+          {/* hanya tampil untuk BIDANG & KEPALA_BIDANG */}
           {!authLoading && isBidangLike && (
             <Button
               variant="contained"
               startIcon={<AddRoundedIcon />}
-              sx={{
-                borderRadius: 999,
-                fontWeight: 900,
-                bgcolor: NAVY,
-                "&:hover": { bgcolor: "#082C41" },
-                px: 2.2,
-              }}
+              sx={{ borderRadius: 999, fontWeight: 900, bgcolor: NAVY, "&:hover": { bgcolor: "#082C41" }, px: 2.2 }}
               onClick={handleGoCreate}
             >
               Tambah Data
@@ -610,12 +770,7 @@ export default function DatasetsPage() {
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                   {activeFilters.length ? (
                     activeFilters.map((c) => (
-                      <Chip
-                        key={`${c.k}-${c.v}`}
-                        label={`${c.k}: ${c.v}`}
-                        variant="outlined"
-                        sx={{ borderRadius: 999 }}
-                      />
+                      <Chip key={`${c.k}-${c.v}`} label={`${c.k}: ${c.v}`} variant="outlined" sx={{ borderRadius: 999 }} />
                     ))
                   ) : (
                     <Chip label="Tidak ada filter aktif" variant="outlined" sx={{ borderRadius: 999 }} />
@@ -625,13 +780,7 @@ export default function DatasetsPage() {
 
               <Grid item xs={12} md={6}>
                 <Stack direction="row" spacing={1} justifyContent="flex-end">
-                  <Button
-                    variant="outlined"
-                    color="error"
-                    onClick={resetFilter}
-                    startIcon={<RestartAltRoundedIcon />}
-                    sx={{ borderRadius: 999, fontWeight: 900 }}
-                  >
+                  <Button variant="outlined" color="error" onClick={resetFilter} startIcon={<RestartAltRoundedIcon />} sx={{ borderRadius: 999, fontWeight: 900 }}>
                     Hapus Filter
                   </Button>
                 </Stack>
@@ -675,16 +824,7 @@ export default function DatasetsPage() {
             />
           </Paper>
 
-          <Box
-            sx={{
-              mt: 1.5,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 1,
-              flexWrap: "wrap",
-            }}
-          >
+          <Box sx={{ mt: 1.5, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, flexWrap: "wrap" }}>
             <Typography variant="body2" color="text.secondary">
               Menampilkan data sesuai filter. (Backend saat ini hanya memfilter q & status; filter lain di FE.)
             </Typography>
@@ -703,6 +843,28 @@ export default function DatasetsPage() {
           </Box>
         </Box>
       </Paper>
+
+      {/* DELETE CONFIRM (placeholder) */}
+      {deleteTarget && (
+        <Paper sx={{ mt: 2, p: 2, borderRadius: 3, border: "1px solid rgba(239,68,68,0.25)", bgcolor: "rgba(239,68,68,0.04)" }}>
+          <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ md: "center" }}>
+            <Box sx={{ flex: 1 }}>
+              <Typography sx={{ fontWeight: 900, color: "error.main" }}>Konfirmasi Hapus Dataset</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Dataset: <b>{deleteTarget?.nama_data_disp}</b> — (placeholder, belum hit API delete)
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={1}>
+              <Button variant="outlined" onClick={() => setDeleteTarget(null)} sx={{ borderRadius: 999, fontWeight: 900 }} disabled={deleteLoading}>
+                Batal
+              </Button>
+              <Button color="error" variant="contained" onClick={confirmDelete} sx={{ borderRadius: 999, fontWeight: 900 }} disabled={deleteLoading}>
+                {deleteLoading ? "Memproses..." : "Hapus"}
+              </Button>
+            </Stack>
+          </Stack>
+        </Paper>
+      )}
     </Box>
   );
 }
