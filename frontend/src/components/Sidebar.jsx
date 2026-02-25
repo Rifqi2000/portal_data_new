@@ -116,12 +116,6 @@ export default function Sidebar({ width = 272, collapsed = false, onToggle }) {
           label="Kumpulan Data"
           collapsed={collapsed}
         />
-        <Item
-          to="/upload"
-          icon={<CloudUploadOutlinedIcon />}
-          label="Upload Dataset"
-          collapsed={collapsed}
-        />
       </List>
 
       <Box sx={{ flex: 1 }} />

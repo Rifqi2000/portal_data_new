@@ -19,6 +19,13 @@ router.get("/", ctrl.listDatasets);
 router.get("/:dataset_id", ctrl.getDataset);
 
 /**
+ * UPDATE METADATA (EDIT)
+ * PUT /datasets/:dataset_id
+ * payload: { metadata: {...}, components: [...] }
+ */
+router.put("/:dataset_id", ctrl.updateDataset);
+
+/**
  * EXTRA (TERSTRUKTUR ONLY)
  */
 router.get("/:dataset_id/preview", ctrl.previewDataset);

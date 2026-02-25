@@ -138,6 +138,14 @@ function makePhysicalTableName(datasetId) {
   return `ds_${nodash}`;
 }
 
+// status yang boleh diedit metadata
+function canEditStatus(status) {
+  const s = normUpper(status);
+  if (s === "DRAFT") return true;
+  if (s.startsWith("REJECTED")) return true; // REJECTED_KABID / REJECTED_PUSDATIN
+  return false;
+}
+
 // =========================
 // LIST (RBAC applied here)
 // =========================
@@ -522,6 +530,315 @@ async function create(db, payload, reqUser) {
 }
 
 // =========================
+// UPDATE METADATA + COLUMNS (TRANSACTION)
+// - status harus DRAFT / REJECTED_*
+// - RBAC: BIDANG hanya dataset bidang sendiri, PUSDATIN boleh semua
+// - jenis_data tidak boleh berubah (untuk menjaga tabel fisik)
+// - kolom yang hilang -> is_active=false (bukan delete)
+// - kolom baru -> insert + ALTER TABLE add column
+// - rename nama_kolom existing -> ditolak (buat kolom baru)
+// =========================
+async function update(db, datasetId, payload, reqUser) {
+  const { bidangId, createdBy } = assertUserContext(reqUser);
+
+  const isBidangLike = hasRole(reqUser, "BIDANG") || hasRole(reqUser, "KEPALA_BIDANG");
+  const canSeeAll = hasRole(reqUser, "PUSDATIN") || hasRole(reqUser, "KEPALA_PUSDATIN");
+
+  const meta = payload?.metadata || {};
+  const cols = Array.isArray(payload?.columns) ? payload.columns : [];
+
+  // ambil dataset + lock
+  const ds = (
+    await db.query(
+      `SELECT dataset_id, bidang_id, nama_dataset, jenis_data, status, deleted_at
+       FROM portal_data.datasets
+       WHERE dataset_id=$1::uuid AND deleted_at IS NULL
+       FOR UPDATE`,
+      [datasetId]
+    )
+  ).rows[0];
+
+  if (!ds) throw Object.assign(new Error("Dataset not found."), { code: "P0001" });
+  if (!canEditStatus(ds.status))
+    throw Object.assign(new Error(`Dataset status "${ds.status}" tidak bisa diedit.`), { code: "P0001" });
+
+  // RBAC edit
+  if (!canSeeAll && isBidangLike) {
+    if (Number(ds.bidang_id) !== Number(bidangId)) {
+      throw Object.assign(new Error("Tidak punya akses edit dataset bidang lain."), { code: "P0001" });
+    }
+  }
+
+  // NOTE: jenis_data tidak boleh berubah
+  const incomingJenis = mapJenisData(pickMeta(meta, "jenis_data"));
+  if (incomingJenis && normUpper(incomingJenis) !== normUpper(ds.jenis_data)) {
+    throw Object.assign(new Error("jenis_data tidak boleh diubah setelah dataset dibuat."), { code: "P0001" });
+  }
+
+  const jenisData = normUpper(ds.jenis_data);
+  const isTerstruktur = jenisData === "TERSTRUKTUR";
+
+  // physical type mengikuti jenis_data existing
+  const physicalType = isTerstruktur ? "VARCHAR(100)" : "TEXT";
+  const forcedTipeData = isTerstruktur ? "varchar" : "text";
+  const forcedPanjang = isTerstruktur ? 100 : null;
+
+  // meta mapping (sama seperti create)
+  const namaDataset = String(pickMeta(meta, "nama_dataset", "nama_data", "nama_dataset_baru")).trim();
+  const deskripsiDataset = String(pickMeta(meta, "deskripsi_dataset", "definisi")).trim();
+
+  const accessLevel = mapAccessLevel(pickMeta(meta, "access_level", "hak_akses"));
+  const spasialStatus = mapSpasial(pickMeta(meta, "spasial", "spasial_status"));
+  const periodePemutakhiran = mapPeriodePemutakhiran(pickMeta(meta, "periode_pemutakhiran"));
+
+  const kontakBidang = String(pickMeta(meta, "kontak", "kontak_bidang")).trim();
+  const topikData = String(pickMeta(meta, "topik", "topik_data")).trim();
+  const sumberData = String(pickMeta(meta, "sumber_data_detail", "sumber_data")).trim();
+  const ukuranData = String(pickMeta(meta, "ukuran", "ukuran_data")).trim();
+  const satuanData = String(pickMeta(meta, "satuan", "satuan_data")).trim();
+
+  // validasi minimal
+  if (!namaDataset) throw Object.assign(new Error("Nama dataset wajib diisi."), { code: "P0001" });
+  if (!deskripsiDataset) throw Object.assign(new Error("Deskripsi/Definisi dataset wajib diisi."), { code: "P0001" });
+  if (!accessLevel) throw Object.assign(new Error("hak_akses wajib: TERBUKA / TERBATAS / RAHASIA"), { code: "P0001" });
+  if (!periodePemutakhiran)
+    throw Object.assign(new Error("periode_pemutakhiran wajib sesuai opsi yang diizinkan."), { code: "P0001" });
+  if (!spasialStatus) throw Object.assign(new Error("spasial wajib: SPASIAL / NON_SPASIAL"), { code: "P0001" });
+
+  // kategori sesuai jenis_data
+  let sdiStatus = "NON_SDI";
+  let dssdStatus = "NON_DSSD";
+
+  if (isTerstruktur) {
+    const sdi = mapSdiStatus(pickMeta(meta, "kategori_data", "sdi_status"));
+    if (!sdi) throw Object.assign(new Error("Untuk TERSTRUKTUR, kategori_data wajib: SDI / NON_SDI"), { code: "P0001" });
+    sdiStatus = sdi;
+    dssdStatus = "NON_DSSD";
+  } else {
+    const dssd = mapDssdStatus(pickMeta(meta, "kategori_data", "dssd_status"));
+    if (!dssd) throw Object.assign(new Error("Untuk TIDAK_TERSTRUKTUR, kategori_data wajib: DSSD / NON_DSSD"), { code: "P0001" });
+    dssdStatus = dssd;
+    sdiStatus = "NON_SDI";
+  }
+
+  // columns clean (boleh update definisi, urutan, is_active, dll)
+  const cleanedCols = cols
+    .map((c, idx) => {
+      const rawName = c?.nama_kolom ?? c?.name ?? "";
+      const rawDesc = c?.definisi_kolom ?? c?.desc ?? "";
+
+      const nama_kolom = formatHeader(rawName);
+      if (!nama_kolom) return null;
+
+      const definisi_kolom = String(rawDesc ?? "").trim() || "-";
+      const nama_tampilan = String(c?.nama_tampilan ?? "").trim() || nama_kolom;
+      const urutan = Number.isFinite(Number(c?.urutan)) ? Number(c.urutan) : idx + 1;
+
+      return {
+        column_id: c?.column_id ?? c?.id ?? null,
+        nama_kolom,
+        nama_tampilan,
+        definisi_kolom,
+        nullable: typeof c?.nullable === "boolean" ? c.nullable : true,
+        aturan_validasi: c?.aturan_validasi ? String(c.aturan_validasi) : null,
+        contoh_nilai: c?.contoh_nilai ? String(c.contoh_nilai) : null,
+        urutan,
+        is_active: typeof c?.is_active === "boolean" ? c.is_active : true,
+      };
+    })
+    .filter(Boolean);
+
+  if (!cleanedCols.length) throw Object.assign(new Error("columns wajib diisi minimal 1 kolom."), { code: "P0001" });
+
+  if (!cleanedCols.some((c) => c.nama_kolom === "PERIODE_DATA"))
+    throw Object.assign(new Error("Kolom wajib PERIODE_DATA belum ada."), { code: "P0001" });
+
+  // unik nama kolom
+  const setNames = new Set();
+  for (const c of cleanedCols) {
+    if (setNames.has(c.nama_kolom)) throw Object.assign(new Error(`Duplikat nama_kolom: ${c.nama_kolom}`), { code: "P0001" });
+    setNames.add(c.nama_kolom);
+  }
+
+  // cek unik global nama dataset (kecuali dirinya sendiri)
+  const dup =
+    (
+      await db.query(
+        `SELECT 1
+         FROM portal_data.datasets
+         WHERE deleted_at IS NULL
+           AND LOWER(nama_dataset)=LOWER($1)
+           AND dataset_id <> $2::uuid
+         LIMIT 1`,
+        [namaDataset, datasetId]
+      )
+    ).rowCount > 0;
+  if (dup) throw Object.assign(new Error("Nama dataset sudah digunakan (unik global)."), { code: "P0001" });
+
+  // ambil existing columns
+  const existingCols = (
+    await db.query(
+      `SELECT column_id, nama_kolom
+       FROM portal_data.dataset_columns
+       WHERE dataset_id=$1::uuid`,
+      [datasetId]
+    )
+  ).rows;
+
+  const existingByName = new Map(existingCols.map((r) => [String(r.nama_kolom), r]));
+  const incomingNames = new Set(cleanedCols.map((c) => c.nama_kolom));
+
+  // rename detection (kalau FE kirim column_id tapi nama berubah)
+  // -> kita blok rename agar tidak merusak tabel fisik
+  const existingById = new Map(existingCols.map((r) => [String(r.column_id), r]));
+  for (const c of cleanedCols) {
+    if (c.column_id) {
+      const old = existingById.get(String(c.column_id));
+      if (old && String(old.nama_kolom) !== String(c.nama_kolom)) {
+        throw Object.assign(
+          new Error(`Rename kolom tidak diizinkan: "${old.nama_kolom}" -> "${c.nama_kolom}". Buat kolom baru saja.`),
+          { code: "P0001" }
+        );
+      }
+    }
+  }
+
+  // physical table
+  const physicalTable = makePhysicalTableName(datasetId);
+
+  try {
+    await db.query("BEGIN");
+
+    // update datasets
+    await db.query(
+      `UPDATE portal_data.datasets
+       SET
+         nama_dataset = $2::text,
+         deskripsi_dataset = $3::text,
+         access_level = $4::portal_data.dataset_access_level,
+         periode_pemutakhiran = $5::text,
+         spasial_status = $6::text,
+         sdi_status = $7::portal_data.dataset_sdi_status,
+         dssd_status = $8::portal_data.dataset_dssd_status,
+         kontak_bidang = $9::text,
+         topik_data = $10::text,
+         sumber_data = $11::text,
+         ukuran_data = $12::text,
+         satuan_data = $13::text,
+         updated_at = NOW(),
+         updated_by = $14::uuid
+       WHERE dataset_id = $1::uuid`,
+      [
+        datasetId,
+        namaDataset,
+        deskripsiDataset,
+        accessLevel,
+        periodePemutakhiran,
+        spasialStatus,
+        sdiStatus,
+        dssdStatus,
+        kontakBidang || null,
+        topikData || null,
+        sumberData || null,
+        ukuranData || null,
+        satuanData || null,
+        createdBy,
+      ]
+    );
+
+    // 1) Nonaktifkan kolom yang tidak ada di payload (soft)
+    for (const ex of existingCols) {
+      if (!incomingNames.has(String(ex.nama_kolom))) {
+        await db.query(
+          `UPDATE portal_data.dataset_columns
+           SET is_active=false
+           WHERE column_id=$1::uuid`,
+          [ex.column_id]
+        );
+      }
+    }
+
+    // 2) Upsert: update yang sudah ada, insert yang baru
+    for (const c of cleanedCols) {
+      const ex = existingByName.get(String(c.nama_kolom));
+
+      if (ex) {
+        // update existing
+        await db.query(
+          `UPDATE portal_data.dataset_columns
+           SET
+             nama_tampilan = $2::text,
+             definisi_kolom = $3::text,
+             tipe_data = $4::text,
+             nullable = $5::bool,
+             panjang_maks = $6::int4,
+             aturan_validasi = $7::text,
+             contoh_nilai = $8::text,
+             urutan = $9::int4,
+             is_active = $10::bool
+           WHERE column_id = $1::uuid`,
+          [
+            ex.column_id,
+            c.nama_tampilan,
+            c.definisi_kolom,
+            forcedTipeData,
+            c.nullable,
+            forcedPanjang,
+            c.aturan_validasi,
+            c.contoh_nilai,
+            c.urutan,
+            c.is_active,
+          ]
+        );
+      } else {
+        // insert new
+        const ins = await db.query(
+          `INSERT INTO portal_data.dataset_columns (
+             dataset_id, nama_kolom, nama_tampilan, definisi_kolom,
+             tipe_data, nullable, panjang_maks,
+             aturan_validasi, contoh_nilai, urutan, is_active
+           )
+           VALUES (
+             $1::uuid, $2::text, $3::text, $4::text,
+             $5::text, $6::bool, $7::int4,
+             $8::text, $9::text, $10::int4, $11::bool
+           )
+           RETURNING column_id`,
+          [
+            datasetId,
+            c.nama_kolom,
+            c.nama_tampilan,
+            c.definisi_kolom,
+            forcedTipeData,
+            c.nullable,
+            forcedPanjang,
+            c.aturan_validasi,
+            c.contoh_nilai,
+            c.urutan,
+            c.is_active,
+          ]
+        );
+
+        // ALTER TABLE add column fisik (kalau belum ada)
+        // aman: IF NOT EXISTS
+        await db.query(
+          `ALTER TABLE portal_data."${physicalTable}"
+           ADD COLUMN IF NOT EXISTS "${c.nama_kolom}" ${physicalType}`,
+          []
+        );
+      }
+    }
+
+    await db.query("COMMIT");
+
+    return await detail(db, datasetId);
+  } catch (e) {
+    await db.query("ROLLBACK");
+    throw e;
+  }
+}
+
+// =========================
 // PREVIEW (TERSTRUKTUR ONLY) - dari tabel fisik ds_*
 // exclude: id, created_at
 // =========================
@@ -539,60 +856,44 @@ async function preview(db, datasetId, query) {
   ).rows[0];
 
   if (!ds) throw Object.assign(new Error("Dataset not found."), { code: "P0001" });
-  if (normUpper(ds.jenis_data) !== "TERSTRUKTUR")
+  if (String(ds.jenis_data || "").toUpperCase() !== "TERSTRUKTUR")
     throw Object.assign(new Error("Preview hanya tersedia untuk dataset TERSTRUKTUR."), { code: "P0001" });
 
-  // nama tabel fisik: ds_<uuid tanpa dash>
-  const physicalTable = makePhysicalTableName(datasetId); // ds_xxx
+  // ambil kolom aktif dari dataset_columns (urutan sesuai definisi)
+  const cols = (
+    await db.query(
+      `SELECT nama_kolom
+       FROM portal_data.dataset_columns
+       WHERE dataset_id=$1::uuid AND COALESCE(is_active,true)=true
+       ORDER BY urutan ASC NULLS LAST, nama_kolom ASC`,
+      [datasetId]
+    )
+  ).rows.map((r) => r.nama_kolom);
 
-  // ambil kolom tabel fisik (exclude id, created_at)
-  const colsRes = await db.query(
-    `
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_schema = 'portal_data'
-      AND table_name = $1::text
-    ORDER BY ordinal_position ASC
-    `,
-    [physicalTable]
-  );
+  if (!cols.length)
+    throw Object.assign(new Error("Dataset columns kosong."), { code: "P0001" });
 
-  const allCols = colsRes.rows.map((r) => r.column_name);
-  const dataCols = allCols.filter(
-    (c) => !["id", "created_at"].includes(String(c).toLowerCase())
-  );
+  const physicalTable = makePhysicalTableName(datasetId); // ds_<uuidnodash>
 
-  if (!dataCols.length) {
-    return {
-      dataset: ds,
-      columns: [],
-      rows: [],
-      pagination: { limit, offset, total: 0 },
-      source: { physical_table: `portal_data.${physicalTable}` },
-    };
-  }
-
-  // buat SELECT "COL1","COL2",...
-  const selectList = dataCols.map((c) => `"${c.replace(/"/g, '""')}"`).join(", ");
-
+  // total row
   const total =
     (
       await db.query(
-        `SELECT COUNT(*)::int AS total FROM portal_data."${physicalTable}"`,
+        `SELECT COUNT(*)::int AS total
+         FROM portal_data."${physicalTable}"`,
         []
       )
     ).rows[0]?.total ?? 0;
 
-  // order by id desc jika ada id
-  const hasId = allCols.some((c) => String(c).toLowerCase() === "id");
-  const orderBy = hasId ? `ORDER BY id DESC` : ``;
+  // query data (exclude id, created_at otomatis karena kita select hanya cols)
+  const colSql = cols.map((c) => `"${c}"`).join(", ");
 
   const rows = (
     await db.query(
       `
-      SELECT ${selectList}
+      SELECT ${colSql}
       FROM portal_data."${physicalTable}"
-      ${orderBy}
+      ORDER BY created_at DESC NULLS LAST, id DESC
       LIMIT $1 OFFSET $2
       `,
       [limit, offset]
@@ -601,10 +902,10 @@ async function preview(db, datasetId, query) {
 
   return {
     dataset: ds,
-    columns: dataCols,
-    rows,
+    columns: cols,                 // ✅ FE butuh ini
+    rows,                          // ✅ FE butuh ini
     pagination: { limit, offset, total },
-    source: { physical_table: `portal_data.${physicalTable}` },
+    source: { table: `portal_data.${physicalTable}` },
   };
 }
 
@@ -681,6 +982,7 @@ module.exports = {
   detail,
   checkName,
   create,
+  update,            // ✅ TAMBAHAN PENTING
   preview,
   buildTemplateCsv,
   submit,

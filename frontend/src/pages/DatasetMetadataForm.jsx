@@ -1,4 +1,4 @@
-// src/pages/CreateDatasetPage.jsx
+// src/components/DatasetMetadataForm.jsx
 import { useMemo, useState, useEffect } from "react";
 import {
   Alert,
@@ -27,21 +27,16 @@ const NAVY = "#0B3A53";
 /**
  * ✅ Radius lebih “wajar”
  */
-const R_PANEL = 12; // panel kiri/kanan
-const R_CARD = 10; // card kecil di kanan
-const R_INPUT = 10; // input/select
-const R_BTN = 10; // button/chip
+const R_PANEL = 12;
+const R_CARD = 10;
+const R_INPUT = 10;
+const R_BTN = 10;
 
 /**
  * ✅ ENUM sesuai DB
- * access_level: TERBUKA, TERBATAS, RAHASIA
  */
 const OPT_HAK_AKSES = ["TERBUKA", "TERBATAS", "RAHASIA"];
 const OPT_JENIS = ["TERSTRUKTUR", "TIDAK_TERSTRUKTUR"];
-
-/**
- * ✅ PERIODE sesuai CHECK constraint (pakai spasi)
- */
 const OPT_PERIODE = [
   "1 MINGGU SEKALI",
   "1 BULAN SEKALI",
@@ -50,7 +45,6 @@ const OPT_PERIODE = [
   "1 TAHUN SEKALI",
   "5 TAHUN SEKALI",
 ];
-
 const OPT_KATEGORI_TERSTRUKTUR = ["SDI", "NON_SDI"];
 const OPT_KATEGORI_TIDAK_TERSTRUKTUR = ["DSSD", "NON_DSSD"];
 const OPT_SPASIAL = ["SPASIAL", "NON_SPASIAL"];
@@ -60,7 +54,11 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 // ✅ Ambil token
 function getToken() {
-  return localStorage.getItem("pd_access_token") || localStorage.getItem("accessToken") || "";
+  return (
+    localStorage.getItem("pd_access_token") ||
+    localStorage.getItem("accessToken") ||
+    ""
+  );
 }
 
 // UPPERCASE + spasi => _ + hanya A-Z0-9_ + trim underscore
@@ -77,13 +75,7 @@ function formatHeader(v) {
 function extractErrorMessage(json, fallback) {
   if (!json) return fallback;
   if (typeof json === "string") return json;
-  return (
-    json?.message ||
-    json?.error?.message ||
-    json?.error ||
-    json?.msg ||
-    fallback
-  );
+  return json?.message || json?.error?.message || json?.error || json?.msg || fallback;
 }
 
 /**
@@ -101,8 +93,109 @@ const selectSx = {
   bgcolor: "#fff",
 };
 
-export default function CreateDatasetPage() {
+// helper mapping dari response detail() backend ke state FE
+function mapBackendToForm(ds) {
+  // ds = objek hasil detail(): { ...fields, columns: [] }
+  const jenis = String(ds?.jenis_data || "").toUpperCase();
+
+  // kategori turunan: SDI/NON_SDI atau DSSD/NON_DSSD
+  const kategori =
+    jenis === "TERSTRUKTUR"
+      ? String(ds?.sdi_status || "")
+      : String(ds?.dssd_status || "");
+
+  const columns = Array.isArray(ds?.columns) ? ds.columns : [];
+  const mappedColumns =
+    columns.length > 0
+      ? columns
+          .slice()
+          .sort((a, b) => (Number(a.urutan) || 0) - (Number(b.urutan) || 0))
+          .map((c, idx) => ({
+            key: c.column_id || `col-${idx}`,
+            column_id: c.column_id || null,
+            name: c.nama_kolom || "",
+            desc: c.definisi_kolom || "",
+            urutan: c.urutan ?? idx + 1,
+          }))
+      : [
+          {
+            key: "col-1",
+            column_id: null,
+            name: "PERIODE_DATA",
+            desc: "PERIODE_DATA (CONTOH: 2026-02)",
+            urutan: 1,
+          },
+        ];
+
+  // pastikan PERIODE_DATA ada & jadi item pertama
+  const hasPeriode = mappedColumns.some((c) => formatHeader(c.name) === "PERIODE_DATA");
+  let finalCols = mappedColumns.map((c, i) => ({ ...c, name: formatHeader(c.name), urutan: i + 1 }));
+  if (!hasPeriode) {
+    finalCols = [
+      { key: "col-periode", column_id: null, name: "PERIODE_DATA", desc: "PERIODE_DATA (CONTOH: 2026-02)", urutan: 1 },
+      ...finalCols.map((c, i) => ({ ...c, urutan: i + 2 })),
+    ];
+  }
+
+  // pindahkan PERIODE_DATA ke index 0
+  finalCols.sort((a, b) => {
+    const aa = formatHeader(a.name) === "PERIODE_DATA" ? -1 : 1;
+    const bb = formatHeader(b.name) === "PERIODE_DATA" ? -1 : 1;
+    if (aa !== bb) return aa - bb;
+    return (Number(a.urutan) || 0) - (Number(b.urutan) || 0);
+  });
+  finalCols = finalCols.map((c, i) => ({ ...c, urutan: i + 1 }));
+
+  return {
+    namaData: ds?.nama_dataset || "",
+    definisi: ds?.deskripsi_dataset || "",
+    hakAkses: ds?.access_level || "",
+    jenisData: jenis || "",
+    kategoriTurunan: kategori || "",
+    spasial: ds?.spasial_status || "",
+    periodePemutakhiran: ds?.periode_pemutakhiran || "",
+    kontak: ds?.kontak_bidang || "",
+    topik: ds?.topik_data || "",
+    sumberDataDetail: ds?.sumber_data || "",
+    ukuran: ds?.ukuran_data || "",
+    satuan: ds?.satuan_data || "",
+    produsenData: ds?.produsen_data || "PUSDATIN_DPRKP",
+    columns: finalCols,
+  };
+}
+
+/**
+ * Props:
+ * - mode: "view" | "edit"
+ * - title: string
+ * - datasetId: uuid
+ * - data: hasil GET /datasets/:id (json.data) -> { ...dsFields, columns: [] }
+ */
+export default function DatasetMetadataForm({ mode = "view", title, datasetId, data }) {
   const nav = useNavigate();
+  const readOnly = mode === "view";
+
+  // =========================
+  // UI STATE
+  // =========================
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState({
+    open: false,
+    severity: "info",
+    message: "",
+  });
+
+  const showToast = (severity, message) => {
+    const msg =
+      typeof message === "string"
+        ? message
+        : message?.message
+        ? String(message.message)
+        : JSON.stringify(message);
+    setToast({ open: true, severity, message: msg });
+  };
+
+  const closeToast = () => setToast((p) => ({ ...p, open: false }));
 
   // =========================
   // METADATA STATE
@@ -119,48 +212,50 @@ export default function CreateDatasetPage() {
   const [sumberDataDetail, setSumberDataDetail] = useState("");
   const [ukuran, setUkuran] = useState("");
   const [satuan, setSatuan] = useState("");
-
   const [produsenData, setProdusenData] = useState("");
-  const [cekNamaStatus, setCekNamaStatus] = useState("BELUM_DICEK"); // BELUM_DICEK | VALID | DUPLIKAT
+
+  // untuk edit nama: aturan cek-nama hanya jika berubah
+  const [originalNamaData, setOriginalNamaData] = useState("");
+  const [cekNamaStatus, setCekNamaStatus] = useState("VALID"); // VALID / DUPLIKAT / BELUM_DICEK
   const [checkingName, setCheckingName] = useState(false);
 
   // =========================
-  // UI STATE
+  // COLUMN STATE
   // =========================
-  const [saving, setSaving] = useState(false);
-  const [toast, setToast] = useState({
-    open: false,
-    severity: "info", // success | error | warning | info
-    message: "",
-  });
+  const [columns, setColumns] = useState([
+    { key: "col-1", column_id: null, name: "PERIODE_DATA", desc: "PERIODE_DATA (CONTOH: 2026-02)", urutan: 1 },
+  ]);
 
-  const showToast = (severity, message) => {
-    const msg =
-      typeof message === "string"
-        ? message
-        : message?.message
-        ? String(message.message)
-        : JSON.stringify(message);
-    setToast({ open: true, severity, message: msg });
-  };
-
-  const closeToast = () => setToast((p) => ({ ...p, open: false }));
-
-  // set default produsen
+  // hydrate dari backend (data)
   useEffect(() => {
-    setProdusenData("PUSDATIN_DPRKP");
-  }, []);
+    if (!data) return;
+    const mapped = mapBackendToForm(data);
+    setNamaData(mapped.namaData);
+    setDefinisi(mapped.definisi);
+    setHakAkses(mapped.hakAkses);
+    setJenisData(mapped.jenisData);
+    setKategoriTurunan(mapped.kategoriTurunan);
+    setSpasial(mapped.spasial);
+    setPeriodePemutakhiran(mapped.periodePemutakhiran);
+    setKontak(mapped.kontak);
+    setTopik(mapped.topik);
+    setSumberDataDetail(mapped.sumberDataDetail);
+    setUkuran(mapped.ukuran);
+    setSatuan(mapped.satuan);
+    setProdusenData(mapped.produsenData || "PUSDATIN_DPRKP");
+    setColumns(mapped.columns);
 
-  // Reset ketika jenis berubah
-  useEffect(() => {
-    setKategoriTurunan("");
-    setSpasial("");
-  }, [jenisData]);
+    setOriginalNamaData(mapped.namaData || "");
+    setCekNamaStatus("VALID"); // default valid kalau berasal dari DB
+  }, [data]);
 
-  // Reset status cek nama kalau nama berubah
+  // Reset status cek nama kalau nama berubah (khusus edit)
   useEffect(() => {
-    setCekNamaStatus("BELUM_DICEK");
-  }, [namaData]);
+    if (readOnly) return;
+    if (!originalNamaData) return;
+    const changed = String(namaData || "").trim().toLowerCase() !== String(originalNamaData || "").trim().toLowerCase();
+    setCekNamaStatus(changed ? "BELUM_DICEK" : "VALID");
+  }, [namaData, originalNamaData, readOnly]);
 
   const opsiKategoriTurunan = useMemo(() => {
     if (jenisData === "TERSTRUKTUR") return OPT_KATEGORI_TERSTRUKTUR;
@@ -169,37 +264,32 @@ export default function CreateDatasetPage() {
   }, [jenisData]);
 
   // =========================
-  // COLUMN STATE
+  // COLUMN HANDLERS
   // =========================
-  const [columns, setColumns] = useState([
-    {
-      key: "col-1",
-      name: "PERIODE_DATA",
-      desc: "PERIODE_DATA (CONTOH: 2026-02)",
-    },
-  ]);
-
   const handleAddColumn = () => {
+    if (readOnly) return;
     setColumns((prev) => [
       ...prev,
-      { key: `col-${Date.now()}`, name: "", desc: "" },
+      { key: `col-${Date.now()}`, column_id: null, name: "", desc: "", urutan: prev.length + 1 },
     ]);
   };
 
   const handleRemoveColumn = (key) => {
-    setColumns((prev) => prev.filter((c) => c.key !== key));
+    if (readOnly) return;
+    setColumns((prev) => prev.filter((c) => c.key !== key).map((c, i) => ({ ...c, urutan: i + 1 })));
   };
 
   const handleUpdateColumn = (key, patch) => {
+    if (readOnly) return;
     setColumns((prev) =>
-      prev.map((c) => (c.key === key ? { ...c, ...patch } : c))
+      prev.map((c) => (c.key === key ? { ...c, ...patch } : c)).map((c, i) => ({ ...c, urutan: i + 1 }))
     );
   };
 
   // =========================
-  // VALIDATION HELPERS
+  // VALIDATION (EDIT)
   // =========================
-  const validateBeforeSave = () => {
+  const validateBeforeUpdate = () => {
     if (!namaData.trim()) return "Nama data wajib diisi.";
     if (namaData.trim().length < 3) return "Nama data minimal 3 karakter.";
     if (!definisi.trim()) return "Definisi wajib diisi.";
@@ -209,12 +299,18 @@ export default function CreateDatasetPage() {
     if (!spasial) return "Spasial wajib dipilih.";
     if (!periodePemutakhiran) return "Periode pemutakhiran wajib dipilih.";
 
-    if (cekNamaStatus !== "VALID") {
-      return "Silakan CEK DATA terlebih dahulu sampai status VALID.";
+    // cek nama hanya bila berubah
+    const changed =
+      String(namaData || "").trim().toLowerCase() !==
+      String(originalNamaData || "").trim().toLowerCase();
+
+    if (changed && cekNamaStatus !== "VALID") {
+      return "Nama data berubah. Silakan CEK DATA terlebih dahulu sampai status VALID.";
     }
 
     const cleaned = columns
       .map((c, idx) => ({
+        column_id: c.column_id || null,
         name: formatHeader(c.name),
         desc: String(c.desc || "").trim(),
         urutan: idx + 1,
@@ -238,7 +334,7 @@ export default function CreateDatasetPage() {
   };
 
   // =========================
-  // API: CHECK NAME
+  // API: CHECK NAME (untuk edit juga bila berubah)
   // =========================
   const handleCekData = async () => {
     try {
@@ -271,7 +367,7 @@ export default function CreateDatasetPage() {
       const json = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        setCekNamaStatus("BELUM_DICEK"); // ✅ jangan jadi DUPLIKAT kalau request error
+        setCekNamaStatus("BELUM_DICEK");
         const msg = extractErrorMessage(
           json,
           `Gagal cek nama dataset (HTTP ${res.status}).`
@@ -295,9 +391,9 @@ export default function CreateDatasetPage() {
   };
 
   // =========================
-  // API: SAVE DATASET
+  // API: UPDATE METADATA
   // =========================
-  const handleSaveDataset = async () => {
+  const handleUpdateMetadata = async () => {
     try {
       if (!API_BASE) {
         showToast(
@@ -307,7 +403,7 @@ export default function CreateDatasetPage() {
         return;
       }
 
-      const errMsg = validateBeforeSave();
+      const errMsg = validateBeforeUpdate();
       if (errMsg) {
         showToast("warning", errMsg);
         return;
@@ -317,6 +413,7 @@ export default function CreateDatasetPage() {
 
       const cleanedColumns = columns
         .map((c, i) => ({
+          column_id: c.column_id || null,
           nama_kolom: formatHeader(c.name),
           definisi_kolom: String(c.desc || "").trim(),
           urutan: i + 1,
@@ -339,16 +436,12 @@ export default function CreateDatasetPage() {
           ukuran: ukuran.trim(),
           satuan: satuan.trim(),
         },
-        columns: cleanedColumns.map((c) => ({
-          nama_kolom: c.nama_kolom,
-          definisi_kolom: c.definisi_kolom,
-          urutan: c.urutan,
-        })),
+        columns: cleanedColumns,
       };
 
       const token = getToken();
-      const res = await fetch(`${API_BASE}/datasets`, {
-        method: "POST",
+      const res = await fetch(`${API_BASE}/datasets/${datasetId}`, {
+        method: "PUT",
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -361,19 +454,20 @@ export default function CreateDatasetPage() {
       if (!res.ok) {
         const msg = extractErrorMessage(
           json,
-          `Gagal simpan dataset (HTTP ${res.status}).`
+          `Gagal perbarui metadata (HTTP ${res.status}).`
         );
         throw new Error(msg);
       }
 
-      // ✅ SUKSES: POPUP + AUTO REDIRECT 3 DETIK KE /datasets
-      showToast("success", "✅ Data berhasil disimpan. Mengalihkan ke Kumpulan Dataset...");
+      showToast("success", "✅ Metadata berhasil diperbarui.");
+
+      // redirect balik ke detail metadata
       setTimeout(() => {
-        nav("/datasets", { replace: true, state: { refresh: true } });
-      }, 3000);
+        nav(`/datasets/${datasetId}`, { replace: true });
+      }, 1200);
     } catch (err) {
       console.error(err);
-      showToast("error", err?.message || "Gagal simpan dataset.");
+      showToast("error", err?.message || "Gagal perbarui metadata.");
     } finally {
       setSaving(false);
     }
@@ -445,8 +539,13 @@ export default function CreateDatasetPage() {
       >
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 900 }}>
-            TAMBAH DATA
+            {title || (readOnly ? "LIHAT METADATA" : "EDIT METADATA")}
           </Typography>
+          {data?.nama_dataset ? (
+            <Typography sx={{ color: "rgba(2,6,23,0.55)", fontWeight: 700 }}>
+              Dataset: {data.nama_dataset}
+            </Typography>
+          ) : null}
         </Box>
 
         <Stack direction="row" spacing={1}>
@@ -467,28 +566,30 @@ export default function CreateDatasetPage() {
             KEMBALI
           </Button>
 
-          <Button
-            variant="contained"
-            startIcon={
-              saving ? (
-                <CircularProgress size={18} sx={{ color: "#fff" }} />
-              ) : (
-                <SaveRoundedIcon />
-              )
-            }
-            onClick={handleSaveDataset}
-            disabled={saving || checkingName}
-            sx={{
-              borderRadius: `${R_BTN}px !important`,
-              fontWeight: 800,
-              bgcolor: NAVY,
-              "&:hover": { bgcolor: "#082C41" },
-              height: 44,
-              opacity: saving ? 0.85 : 1,
-            }}
-          >
-            {saving ? "MENYIMPAN..." : "SIMPAN DATASET"}
-          </Button>
+          {!readOnly && (
+            <Button
+              variant="contained"
+              startIcon={
+                saving ? (
+                  <CircularProgress size={18} sx={{ color: "#fff" }} />
+                ) : (
+                  <SaveRoundedIcon />
+                )
+              }
+              onClick={handleUpdateMetadata}
+              disabled={saving || checkingName}
+              sx={{
+                borderRadius: `${R_BTN}px !important`,
+                fontWeight: 800,
+                bgcolor: NAVY,
+                "&:hover": { bgcolor: "#082C41" },
+                height: 44,
+                opacity: saving ? 0.85 : 1,
+              }}
+            >
+              {saving ? "MEMPERBARUI..." : "PERBARUI METADATA"}
+            </Button>
+          )}
         </Stack>
       </Box>
 
@@ -512,7 +613,9 @@ export default function CreateDatasetPage() {
             boxShadow: "0 8px 24px rgba(2,6,23,0.06)",
           }}
         >
-          <Typography sx={{ fontWeight: 900, mb: 2 }}>IDENTITAS DATASET</Typography>
+          <Typography sx={{ fontWeight: 900, mb: 2 }}>
+            IDENTITAS DATASET
+          </Typography>
 
           <Stack spacing={1.6}>
             <TextField
@@ -521,45 +624,50 @@ export default function CreateDatasetPage() {
               onChange={(e) => setNamaData(e.target.value)}
               fullWidth
               sx={tfSx}
-              disabled={saving}
+              disabled={readOnly || saving}
             />
 
-            <Button
-              onClick={handleCekData}
-              variant="contained"
-              disabled={checkingName || saving}
-              startIcon={
-                checkingName ? (
-                  <CircularProgress size={18} sx={{ color: "#fff" }} />
-                ) : null
-              }
-              sx={{
-                borderRadius: `${R_BTN}px !important`,
-                fontWeight: 800,
-                bgcolor: "#2E7D32",
-                "&:hover": { bgcolor: "#256628" },
-                height: 44,
-              }}
-            >
-              {checkingName ? "MENGECEK..." : "CEK DATA"}
-            </Button>
+            {/* CEK DATA: tampilkan untuk EDIT saja (kalau nama berubah), hidden untuk VIEW */}
+            {!readOnly && (
+              <>
+                <Button
+                  onClick={handleCekData}
+                  variant="contained"
+                  disabled={checkingName || saving}
+                  startIcon={
+                    checkingName ? (
+                      <CircularProgress size={18} sx={{ color: "#fff" }} />
+                    ) : null
+                  }
+                  sx={{
+                    borderRadius: `${R_BTN}px !important`,
+                    fontWeight: 800,
+                    bgcolor: "#2E7D32",
+                    "&:hover": { bgcolor: "#256628" },
+                    height: 44,
+                  }}
+                >
+                  {checkingName ? "MENGECEK..." : "CEK DATA"}
+                </Button>
 
-            <Chip
-              label={cekNamaStatus}
-              variant="outlined"
-              sx={{
-                borderRadius: `${R_BTN}px !important`,
-                width: "fit-content",
-                fontWeight: 800,
-              }}
-              color={
-                cekNamaStatus === "VALID"
-                  ? "success"
-                  : cekNamaStatus === "DUPLIKAT"
-                  ? "error"
-                  : "default"
-              }
-            />
+                <Chip
+                  label={cekNamaStatus}
+                  variant="outlined"
+                  sx={{
+                    borderRadius: `${R_BTN}px !important`,
+                    width: "fit-content",
+                    fontWeight: 800,
+                  }}
+                  color={
+                    cekNamaStatus === "VALID"
+                      ? "success"
+                      : cekNamaStatus === "DUPLIKAT"
+                      ? "error"
+                      : "default"
+                  }
+                />
+              </>
+            )}
 
             <TextField
               label="DEFINISI"
@@ -569,7 +677,7 @@ export default function CreateDatasetPage() {
               minRows={4}
               fullWidth
               sx={tfSx}
-              disabled={saving}
+              disabled={readOnly || saving}
             />
 
             {/* HAK AKSES */}
@@ -579,7 +687,7 @@ export default function CreateDatasetPage() {
                 value={hakAkses}
                 onChange={(e) => setHakAkses(e.target.value)}
                 sx={selectSx}
-                disabled={saving}
+                disabled={readOnly || saving}
               >
                 <MenuItem value="">- PILIH HAK AKSES -</MenuItem>
                 {OPT_HAK_AKSES.map((x) => (
@@ -590,14 +698,14 @@ export default function CreateDatasetPage() {
               </Select>
             </FormControl>
 
-            {/* JENIS DATA */}
+            {/* JENIS DATA (di backend: jenis_data tidak boleh berubah, jadi di edit kita lock saja biar selaras) */}
             <FormControl fullWidth>
               <Select
                 displayEmpty
                 value={jenisData}
                 onChange={(e) => setJenisData(e.target.value)}
                 sx={selectSx}
-                disabled={saving}
+                disabled // selalu disable supaya tidak konflik dengan rule backend
               >
                 <MenuItem value="">- PILIH JENIS DATA -</MenuItem>
                 {OPT_JENIS.map((x) => (
@@ -616,7 +724,7 @@ export default function CreateDatasetPage() {
                   value={kategoriTurunan}
                   onChange={(e) => setKategoriTurunan(e.target.value)}
                   sx={selectSx}
-                  disabled={saving}
+                  disabled={readOnly || saving}
                 >
                   <MenuItem value="">
                     {jenisData === "TERSTRUKTUR"
@@ -640,7 +748,7 @@ export default function CreateDatasetPage() {
                   value={spasial}
                   onChange={(e) => setSpasial(e.target.value)}
                   sx={selectSx}
-                  disabled={saving}
+                  disabled={readOnly || saving}
                 >
                   <MenuItem value="">- PILIH SPASIAL / NON SPASIAL -</MenuItem>
                   {OPT_SPASIAL.map((x) => (
@@ -672,7 +780,7 @@ export default function CreateDatasetPage() {
                 value={periodePemutakhiran}
                 onChange={(e) => setPeriodePemutakhiran(e.target.value)}
                 sx={selectSx}
-                disabled={saving}
+                disabled={readOnly || saving}
               >
                 <MenuItem value="">- PILIH PERIODE -</MenuItem>
                 {OPT_PERIODE.map((x) => (
@@ -683,11 +791,11 @@ export default function CreateDatasetPage() {
               </Select>
             </FormControl>
 
-            <TextField label="KONTAK" value={kontak} onChange={(e) => setKontak(e.target.value)} fullWidth sx={tfSx} disabled={saving} />
-            <TextField label="TOPIK" value={topik} onChange={(e) => setTopik(e.target.value)} fullWidth sx={tfSx} disabled={saving} />
-            <TextField label="SUMBER DATA" value={sumberDataDetail} onChange={(e) => setSumberDataDetail(e.target.value)} fullWidth sx={tfSx} disabled={saving} />
-            <TextField label="UKURAN" value={ukuran} onChange={(e) => setUkuran(e.target.value)} fullWidth sx={tfSx} disabled={saving} />
-            <TextField label="SATUAN" value={satuan} onChange={(e) => setSatuan(e.target.value)} fullWidth sx={tfSx} disabled={saving} />
+            <TextField label="KONTAK" value={kontak} onChange={(e) => setKontak(e.target.value)} fullWidth sx={tfSx} disabled={readOnly || saving} />
+            <TextField label="TOPIK" value={topik} onChange={(e) => setTopik(e.target.value)} fullWidth sx={tfSx} disabled={readOnly || saving} />
+            <TextField label="SUMBER DATA" value={sumberDataDetail} onChange={(e) => setSumberDataDetail(e.target.value)} fullWidth sx={tfSx} disabled={readOnly || saving} />
+            <TextField label="UKURAN" value={ukuran} onChange={(e) => setUkuran(e.target.value)} fullWidth sx={tfSx} disabled={readOnly || saving} />
+            <TextField label="SATUAN" value={satuan} onChange={(e) => setSatuan(e.target.value)} fullWidth sx={tfSx} disabled={readOnly || saving} />
           </Stack>
         </Paper>
 
@@ -705,9 +813,85 @@ export default function CreateDatasetPage() {
           <Typography sx={{ fontWeight: 900, mb: 2 }}>KOMPONEN DATA</Typography>
 
           <Stack spacing={1.6}>
-            {columns.map((c, idx) => (
+            {columns.map((c, idx) => {
+              const isPeriode = formatHeader(c.name) === "PERIODE_DATA";
+              return (
+                <Paper
+                  key={c.key}
+                  elevation={0}
+                  sx={{
+                    p: 2,
+                    borderRadius: `${R_CARD}px !important`,
+                    border: "1px solid rgba(15,23,42,0.10)",
+                    bgcolor: "#fff",
+                  }}
+                >
+                  <TextField
+                    fullWidth
+                    placeholder="HEADER / JUDUL KOLOM"
+                    value={c.name}
+                    onChange={(e) =>
+                      handleUpdateColumn(c.key, {
+                        name: formatHeader(e.target.value),
+                      })
+                    }
+                    disabled={readOnly || saving || isPeriode} // PERIODE_DATA dikunci
+                    sx={{ ...tfSx, mb: 1 }}
+                  />
+
+                  <TextField
+                    fullWidth
+                    placeholder="DESKRIPSI"
+                    multiline
+                    minRows={3}
+                    value={c.desc}
+                    onChange={(e) =>
+                      handleUpdateColumn(c.key, { desc: e.target.value })
+                    }
+                    disabled={readOnly || saving}
+                    sx={tfSx}
+                  />
+
+                  {!readOnly && !isPeriode && (
+                    <Button
+                      color="error"
+                      onClick={() => handleRemoveColumn(c.key)}
+                      sx={{
+                        mt: 1,
+                        borderRadius: `${R_BTN}px !important`,
+                        fontWeight: 800,
+                        textTransform: "none",
+                      }}
+                      disabled={saving}
+                    >
+                      HAPUS
+                    </Button>
+                  )}
+                </Paper>
+              );
+            })}
+
+            {!readOnly && (
+              <Button
+                variant="contained"
+                startIcon={<AddRoundedIcon />}
+                onClick={handleAddColumn}
+                disabled={saving}
+                sx={{
+                  borderRadius: `${R_BTN}px !important`,
+                  fontWeight: 800,
+                  bgcolor: "#2E7D32",
+                  "&:hover": { bgcolor: "#256628" },
+                  height: 44,
+                }}
+              >
+                TAMBAH KOMPONEN
+              </Button>
+            )}
+
+            {/* preview payload: boleh tampil di edit, hide di view kalau mau */}
+            {!readOnly && (
               <Paper
-                key={c.key}
                 elevation={0}
                 sx={{
                   p: 2,
@@ -716,91 +900,25 @@ export default function CreateDatasetPage() {
                   bgcolor: "#fff",
                 }}
               >
-                <TextField
-                  fullWidth
-                  placeholder="HEADER / JUDUL KOLOM"
-                  value={c.name}
-                  onChange={(e) =>
-                    handleUpdateColumn(c.key, {
-                      name: formatHeader(e.target.value),
-                    })
-                  }
-                  disabled={idx === 0 || saving}
-                  sx={{ ...tfSx, mb: 1 }}
-                />
-
-                <TextField
-                  fullWidth
-                  placeholder="DESKRIPSI"
-                  multiline
-                  minRows={3}
-                  value={c.desc}
-                  onChange={(e) => handleUpdateColumn(c.key, { desc: e.target.value })}
-                  disabled={saving}
-                  sx={tfSx}
-                />
-
-                {idx !== 0 && (
-                  <Button
-                    color="error"
-                    onClick={() => handleRemoveColumn(c.key)}
-                    sx={{
-                      mt: 1,
-                      borderRadius: `${R_BTN}px !important`,
-                      fontWeight: 800,
-                      textTransform: "none",
-                    }}
-                    disabled={saving}
-                  >
-                    HAPUS
-                  </Button>
-                )}
+                <Typography sx={{ fontWeight: 900, mb: 1 }}>
+                  PREVIEW PAYLOAD (DEMO)
+                </Typography>
+                <Box
+                  component="pre"
+                  sx={{
+                    m: 0,
+                    p: 1.5,
+                    borderRadius: `${R_INPUT}px !important`,
+                    bgcolor: "rgba(2,6,23,0.04)",
+                    overflow: "auto",
+                    maxHeight: 280,
+                    fontSize: 12,
+                  }}
+                >
+                  {JSON.stringify(payloadPreview, null, 2)}
+                </Box>
               </Paper>
-            ))}
-
-            <Button
-              variant="contained"
-              startIcon={<AddRoundedIcon />}
-              onClick={handleAddColumn}
-              disabled={saving}
-              sx={{
-                borderRadius: `${R_BTN}px !important`,
-                fontWeight: 800,
-                bgcolor: "#2E7D32",
-                "&:hover": { bgcolor: "#256628" },
-                height: 44,
-              }}
-            >
-              TAMBAH KOMPONEN
-            </Button>
-
-            <Paper
-              elevation={0}
-              sx={{
-                p: 2,
-                borderRadius: `${R_CARD}px !important`,
-                border: "1px solid rgba(15,23,42,0.10)",
-                bgcolor: "#fff",
-              }}
-            >
-              <Typography sx={{ fontWeight: 900, mb: 1 }}>
-                PREVIEW PAYLOAD (DEMO)
-              </Typography>
-              <Box
-                component="pre"
-                sx={{
-                  m: 0,
-                  p: 1.5,
-                  borderRadius: `${R_INPUT}px !important`,
-                  bgcolor: "rgba(2,6,23,0.04)",
-                  overflow: "auto",
-                  maxHeight: 280,
-                  fontSize: 12,
-                }}
-              >
-                {JSON.stringify(payloadPreview, null, 2)}
-              </Box>
-            </Paper>
+            )}
           </Stack>
         </Paper>
       </Box>

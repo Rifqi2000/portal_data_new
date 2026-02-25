@@ -591,10 +591,10 @@ export default function DatasetsPage() {
           <Typography variant="h4" sx={{ fontWeight: 900 }}>
             Kumpulan Dataset
           </Typography>
-          <Typography color="text.secondary">Cari dataset, gunakan filter, lalu kelola metadata & file.</Typography>
+          {/* <Typography color="text.secondary">Cari dataset, gunakan filter, lalu kelola metadata & file.</Typography>
           <Typography variant="caption" sx={{ color: "rgba(2,6,23,0.55)" }}>
             API: <b>{API_BASE || "(belum terbaca)"}</b>
-          </Typography>
+          </Typography> */}
         </Box>
 
         <Stack direction="row" spacing={1} alignItems="center">
@@ -825,9 +825,6 @@ export default function DatasetsPage() {
           </Paper>
 
           <Box sx={{ mt: 1.5, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, flexWrap: "wrap" }}>
-            <Typography variant="body2" color="text.secondary">
-              Menampilkan data sesuai filter. (Backend saat ini hanya memfilter q & status; filter lain di FE.)
-            </Typography>
 
             <Stack direction="row" spacing={1}>
               <Button variant="outlined" sx={{ borderRadius: 999, fontWeight: 900 }}>

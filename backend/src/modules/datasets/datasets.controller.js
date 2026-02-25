@@ -36,6 +36,19 @@ function requireReason(body) {
   return r;
 }
 
+// helper: terima "columns" atau "components"
+function normalizeUpdatePayload(body) {
+  const b = body || {};
+  const metadata = b.metadata || {};
+  const columns = Array.isArray(b.columns)
+    ? b.columns
+    : Array.isArray(b.components)
+    ? b.components
+    : [];
+
+  return { metadata, columns };
+}
+
 // =========================
 // Controllers
 // =========================
@@ -124,6 +137,36 @@ async function createDataset(req, res, next) {
     );
 
     return ok(res, data, "Dataset created");
+  } catch (e) {
+    next(e);
+  }
+}
+
+/**
+ * PUT /datasets/:dataset_id
+ * Body:
+ * {
+ *   metadata: {...},
+ *   columns: [...]    // atau components: [...]
+ * }
+ *
+ * Notes:
+ * - Untuk "Lihat Metadata" tidak perlu endpoint baru (cukup GET detail)
+ * - Untuk "Edit Metadata" gunakan endpoint ini
+ */
+async function updateDataset(req, res, next) {
+  try {
+    const datasetId = assertUuid(req.params.dataset_id, "dataset_id");
+
+    // payload fleksibel: columns atau components
+    const payload = normalizeUpdatePayload(req.body);
+
+    const data = await runWithContext(pool, req.user, null, (db) =>
+      // signature yang disarankan: svc.update(db, datasetId, payload, req.user)
+      svc.update(db, datasetId, payload, req.user)
+    );
+
+    return ok(res, data, "Metadata updated");
   } catch (e) {
     next(e);
   }
@@ -295,6 +338,7 @@ module.exports = {
   getDataset,
   checkName,
   createDataset,
+  updateDataset, // ✅ tambahan
   previewDataset,
   downloadTemplateCsv,
   submitDataset,

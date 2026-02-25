@@ -80,7 +80,18 @@ async function downloadDatasetFile(req, res, next) {
       throw err;
     }
 
-    res.setHeader("Content-Type", fileRow.mime_type || "application/octet-stream");
+    // ✅ tabel kamu tidak punya mime_type, jadi jangan pakai fileRow.mime_type
+    // kalau mau, set berdasarkan extension/file_type
+    const ext = String(fileRow.file_type || "").toLowerCase();
+    const contentType =
+      ext === ".csv"
+        ? "text/csv"
+        : ext === ".xlsx" || ext === ".xls"
+        ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        : "application/octet-stream";
+
+    res.setHeader("Content-Type", contentType);
+
     const downloadName = fileRow.file_name || path.basename(filePath);
     return res.download(filePath, downloadName);
   } catch (err) {
@@ -88,4 +99,30 @@ async function downloadDatasetFile(req, res, next) {
   }
 }
 
-module.exports = { uploadDatasetFile, listDatasetFiles, downloadDatasetFile };
+/**
+ * ✅ NEW: GET /uploads/file/:file_id/preview?limit=&offset=
+ * Preview isi file langsung dari storage_path (sinkron dengan hasil unduhan).
+ */
+async function previewFile(req, res, next) {
+  try {
+    const { file_id } = req.params;
+
+    const limit = Number(req.query?.limit ?? 10);
+    const offset = Number(req.query?.offset ?? 0);
+
+    const data = await runWithContext(pool, req.user, null, (db) =>
+      svc.previewFileById(db, { fileId: file_id, limit, offset })
+    );
+
+    return ok(res, data, "OK");
+  } catch (err) {
+    return next(err);
+  }
+}
+
+module.exports = {
+  uploadDatasetFile,
+  listDatasetFiles,
+  downloadDatasetFile,
+  previewFile,
+};

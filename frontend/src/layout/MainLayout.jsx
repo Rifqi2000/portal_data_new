@@ -44,7 +44,6 @@ export default function MainLayout() {
     () => [
       { to: "/dashboard", label: "Dashboard", icon: <DashboardOutlinedIcon /> },
       { to: "/datasets", label: "Kumpulan Data", icon: <FolderOutlinedIcon /> },
-      { to: "/upload", label: "Upload Dataset", icon: <CloudUploadOutlinedIcon /> }, // kalau belum ada route, boleh hapus
     ],
     []
   );

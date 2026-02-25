@@ -22,7 +22,6 @@ import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import CloudDownloadOutlinedIcon from "@mui/icons-material/CloudDownloadOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
-
 import { DataGrid } from "@mui/x-data-grid";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -119,14 +118,14 @@ function safeString(v) {
 function buildDynamicColumnsFromKeys(keys) {
   const arr = (keys || [])
     .filter((k) => k && k !== "__id")
-    .map(String)
-    .sort((a, b) => a.localeCompare(b));
+    .map(String); // ✅ JANGAN sort, biar ikut urutan API/file
 
   return arr.map((k) => ({
     field: k,
     headerName: k,
     minWidth: 160,
     flex: 1,
+    // ✅ jangan pakai valueGetter, biarkan DataGrid ambil row[field]
     renderCell: (params) => (
       <span
         title={safeString(params.value)}
@@ -141,17 +140,28 @@ function buildDynamicColumnsFromKeys(keys) {
         {safeString(params.value)}
       </span>
     ),
-    valueGetter: (params) => params?.row?.[k],
   }));
 }
 
-// ===== ENDPOINTS =====
 const ENDPOINTS = {
   datasetDetail: (id) => `/datasets/${id}`,
-  previewDataset: (id) => `/datasets/${id}/preview`, // ?limit=&offset=
+  previewDataset: (id) => `/datasets/${id}/preview`, // tabel fisik ds_*
   listFiles: (datasetId) => `/uploads/${datasetId}/files`,
   downloadFile: (fileId) => `/uploads/file/${fileId}/download`,
+  previewFile: (fileId) => `/uploads/file/${fileId}/preview`, // sinkron isi file
 };
+
+// ---- normalizer untuk response files ----
+function normalizeFileRow(f) {
+  if (!f || typeof f !== "object") return f;
+
+  return {
+    ...f,
+    uploaded_at: f.uploaded_at ?? f.created_at ?? f.upload_time ?? null,
+    file_size: f.file_size ?? f.size ?? f.filesize ?? null,
+    file_type: f.file_type ?? f.mime_type ?? f.type ?? null,
+  };
+}
 
 export default function DatasetFilesPage() {
   const { datasetId } = useParams();
@@ -162,10 +172,10 @@ export default function DatasetFilesPage() {
   const [dsLoading, setDsLoading] = useState(true);
   const [datasetRaw, setDatasetRaw] = useState(null);
 
-  // data terbaru (preview fisik ds_*)
+  // data terbaru (preview tabel fisik ds_*)
   const [latestLoading, setLatestLoading] = useState(true);
   const [latestRows, setLatestRows] = useState([]);
-  const [latestCols, setLatestCols] = useState([]); // ✅ kolom dari BE
+  const [latestCols, setLatestCols] = useState([]);
   const [latestTotal, setLatestTotal] = useState(0);
   const [latestPage, setLatestPage] = useState(0);
   const [latestPageSize, setLatestPageSize] = useState(10);
@@ -181,7 +191,7 @@ export default function DatasetFilesPage() {
   const [openPreview, setOpenPreview] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
 
-  // preview rows di dialog
+  // preview rows di dialog (preview isi file)
   const [dlgLoading, setDlgLoading] = useState(false);
   const [dlgRows, setDlgRows] = useState([]);
   const [dlgCols, setDlgCols] = useState([]);
@@ -224,7 +234,8 @@ export default function DatasetFilesPage() {
         "error",
         "VITE_API_BASE_URL belum terbaca. Periksa .env lalu restart."
       );
-    if (!token) return showToast("error", "Token tidak ditemukan. Silakan login ulang.");
+    if (!token)
+      return showToast("error", "Token tidak ditemukan. Silakan login ulang.");
 
     setDsLoading(true);
     try {
@@ -253,7 +264,7 @@ export default function DatasetFilesPage() {
       );
       const data = json?.data ?? {};
       const items = Array.isArray(data?.items) ? data.items : [];
-      setFiles(items);
+      setFiles(items.map(normalizeFileRow));
     } catch (e) {
       setFiles([]);
       showToast("error", e?.message || "Gagal memuat list file.");
@@ -269,7 +280,7 @@ export default function DatasetFilesPage() {
     return `${API_BASE}${ENDPOINTS.previewDataset(datasetId)}?${params.toString()}`;
   };
 
-  // ✅ Preview dari tabel fisik ds_*
+  // ✅ Preview tabel fisik ds_*
   const loadLatestPreview = async () => {
     if (!API_BASE) return;
     if (!token) return;
@@ -286,11 +297,12 @@ export default function DatasetFilesPage() {
     try {
       const url = buildPreviewUrl(latestPage, latestPageSize);
       const json = await fetchJson(url, token);
-
       const data = json?.data ?? json;
+
       const cols = Array.isArray(data?.columns) ? data.columns : [];
       const rows = Array.isArray(data?.rows) ? data.rows : [];
-      const total = Number(data?.pagination?.total ?? 0) || 0;
+      const total =
+        Number(data?.pagination?.total ?? data?.total ?? rows.length ?? 0) || 0;
 
       const shaped = rows.map((r, idx) => ({
         __id: latestPage * latestPageSize + idx + 1,
@@ -348,8 +360,10 @@ export default function DatasetFilesPage() {
         { field: "__empty", headerName: "Data", flex: 1, valueGetter: () => "-" },
       ];
     }
-    // ✅ kolom dari BE (tabel fisik), exclude id & created_at sudah dilakukan BE
-    const dyn = buildDynamicColumnsFromKeys(latestCols.length ? latestCols : Object.keys(latestRows[0] || {}));
+
+    const keys =
+      latestCols?.length ? latestCols : Object.keys(latestRows[0] || {});
+    const dyn = buildDynamicColumnsFromKeys(keys);
     return [{ field: "__id", headerName: "No", width: 90 }, ...dyn];
   }, [latestRows, latestCols]);
 
@@ -360,9 +374,9 @@ export default function DatasetFilesPage() {
         headerName: "Nama File",
         flex: 1.6,
         minWidth: 260,
-        renderCell: (p) => (
+        renderCell: (params) => (
           <span
-            title={p.value}
+            title={params.row?.file_name || ""}
             style={{
               whiteSpace: "nowrap",
               overflow: "hidden",
@@ -371,7 +385,7 @@ export default function DatasetFilesPage() {
               width: "100%",
             }}
           >
-            {p.value}
+            {params.row?.file_name || "-"}
           </span>
         ),
       },
@@ -379,37 +393,38 @@ export default function DatasetFilesPage() {
         field: "version",
         headerName: "Versi",
         width: 110,
-        renderCell: (p) => (
-          <Chip size="small" label={`V${p.value ?? "-"}`} variant="outlined" />
+        renderCell: (params) => (
+          <Chip
+            size="small"
+            label={`V${params.row?.version ?? "-"}`}
+            variant="outlined"
+          />
         ),
       },
       {
         field: "uploaded_at",
         headerName: "Tanggal Upload",
         width: 200,
-        valueGetter: (p) => p?.row?.uploaded_at,
-        renderCell: (p) => formatDateID(p.value),
+        renderCell: (params) => formatDateID(params.row?.uploaded_at),
       },
       {
         field: "file_size",
         headerName: "Ukuran",
         width: 120,
-        valueGetter: (p) => p?.row?.file_size,
-        renderCell: (p) => formatSize(p.value),
+        renderCell: (params) => formatSize(params.row?.file_size),
       },
       {
         field: "file_type",
-        headerName: "MIME",
-        width: 180,
-        valueGetter: (p) => p?.row?.file_type,
-        renderCell: (p) => p.value || "-",
+        headerName: "Tipe",
+        width: 140,
+        renderCell: (params) => params.row?.file_type || "-",
       },
       {
         field: "is_active",
         headerName: "Status",
         width: 120,
-        renderCell: (p) =>
-          p.value ? (
+        renderCell: (params) =>
+          params.row?.is_active ? (
             <Chip size="small" label="Aktif" color="success" />
           ) : (
             <Chip size="small" label="Nonaktif" variant="outlined" />
@@ -423,14 +438,15 @@ export default function DatasetFilesPage() {
         filterable: false,
         align: "center",
         headerAlign: "center",
-        renderCell: (p) => (
+        renderCell: (params) => (
           <Button
             size="small"
             variant="outlined"
             startIcon={<VisibilityOutlinedIcon />}
             sx={{ borderRadius: 999, fontWeight: 900 }}
             onClick={() => {
-              setSelectedFile(p.row);
+              // ✅ BUGFIX: harus params.row (bukan p.row)
+              setSelectedFile(params.row);
               setDlgPage(0);
               setDlgPageSize(10);
               setOpenPreview(true);
@@ -462,9 +478,19 @@ export default function DatasetFilesPage() {
     }
   };
 
+  // ✅ Preview isi file (sinkron dengan unduhan)
   const loadDialogPreview = async () => {
     if (!openPreview) return;
+
     if (!isTerstruktur) {
+      setDlgRows([]);
+      setDlgCols([]);
+      setDlgTotal(0);
+      return;
+    }
+
+    const fileId = selectedFile?.file_id;
+    if (!fileId) {
       setDlgRows([]);
       setDlgCols([]);
       setDlgTotal(0);
@@ -476,14 +502,16 @@ export default function DatasetFilesPage() {
       const params = new URLSearchParams();
       params.set("limit", String(dlgPageSize));
       params.set("offset", String(dlgPage * dlgPageSize));
-      const url = `${API_BASE}${ENDPOINTS.previewDataset(datasetId)}?${params.toString()}`;
+
+      const url = `${API_BASE}${ENDPOINTS.previewFile(fileId)}?${params.toString()}`;
 
       const json = await fetchJson(url, token);
       const data = json?.data ?? json;
 
       const cols = Array.isArray(data?.columns) ? data.columns : [];
       const rows = Array.isArray(data?.rows) ? data.rows : [];
-      const total = Number(data?.pagination?.total ?? 0) || 0;
+      const total =
+        Number(data?.pagination?.total ?? data?.total ?? rows.length ?? 0) || 0;
 
       const shaped = rows.map((r, idx) => ({
         __id: dlgPage * dlgPageSize + idx + 1,
@@ -497,7 +525,7 @@ export default function DatasetFilesPage() {
       setDlgRows([]);
       setDlgCols([]);
       setDlgTotal(0);
-      showToast("error", e?.message || "Gagal memuat preview data.");
+      showToast("error", e?.message || "Gagal memuat preview file.");
     } finally {
       setDlgLoading(false);
     }
@@ -507,7 +535,7 @@ export default function DatasetFilesPage() {
     if (!openPreview) return;
     loadDialogPreview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openPreview, dlgPage, dlgPageSize, isTerstruktur]);
+  }, [openPreview, selectedFile?.file_id, dlgPage, dlgPageSize, isTerstruktur]);
 
   const dlgColumns = useMemo(() => {
     if (!dlgRows.length) {
@@ -516,7 +544,8 @@ export default function DatasetFilesPage() {
         { field: "__empty", headerName: "Data", flex: 1, valueGetter: () => "-" },
       ];
     }
-    const dyn = buildDynamicColumnsFromKeys(dlgCols.length ? dlgCols : Object.keys(dlgRows[0] || {}));
+    const keys = dlgCols?.length ? dlgCols : Object.keys(dlgRows[0] || {});
+    const dyn = buildDynamicColumnsFromKeys(keys);
     return [{ field: "__id", headerName: "No", width: 90 }, ...dyn];
   }, [dlgRows, dlgCols]);
 
@@ -536,7 +565,11 @@ export default function DatasetFilesPage() {
 
       <Paper sx={{ p: 3, borderRadius: 3 }}>
         {/* Header */}
-        <Stack direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ md: "center" }}>
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={1}
+          alignItems={{ md: "center" }}
+        >
           <Box sx={{ flex: 1 }}>
             <Typography variant="h5" sx={{ fontWeight: 900 }}>
               Lihat Filedata
@@ -557,7 +590,11 @@ export default function DatasetFilesPage() {
             <Button
               variant="outlined"
               startIcon={
-                dsLoading || filesLoading ? <CircularProgress size={16} /> : <RefreshRoundedIcon />
+                dsLoading || filesLoading ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <RefreshRoundedIcon />
+                )
               }
               onClick={refreshAll}
               disabled={dsLoading || filesLoading}
@@ -583,7 +620,9 @@ export default function DatasetFilesPage() {
           {dsLoading ? (
             <Stack direction="row" spacing={1} alignItems="center">
               <CircularProgress size={18} />
-              <Typography color="text.secondary">Memuat identitas data...</Typography>
+              <Typography color="text.secondary">
+                Memuat identitas data...
+              </Typography>
             </Stack>
           ) : !ds ? (
             <Typography color="error.main">Identitas data tidak tersedia.</Typography>
@@ -640,8 +679,13 @@ export default function DatasetFilesPage() {
             )}
           </Paper>
 
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-            Sumber Data Terbaru: <code>/datasets/:dataset_id/preview</code> (tabel fisik <code>ds_*</code>)
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ display: "block", mt: 1 }}
+          >
+            Sumber Data Terbaru: <code>/datasets/:dataset_id/preview</code> (tabel fisik{" "}
+            <code>ds_*</code>)
           </Typography>
         </Box>
 
@@ -657,10 +701,16 @@ export default function DatasetFilesPage() {
             <Typography sx={{ fontWeight: 900 }}>Riwayat Upload</Typography>
 
             <FormControl size="small" sx={{ minWidth: 220 }}>
-              <Typography variant="caption" sx={{ mb: 0.5, color: "text.secondary" }}>
+              <Typography
+                variant="caption"
+                sx={{ mb: 0.5, color: "text.secondary" }}
+              >
                 Filter Tanggal Upload
               </Typography>
-              <Select value={uploadDateFilter} onChange={(e) => setUploadDateFilter(e.target.value)}>
+              <Select
+                value={uploadDateFilter}
+                onChange={(e) => setUploadDateFilter(e.target.value)}
+              >
                 <MenuItem value="ALL">Semua Tanggal</MenuItem>
                 {uploadDateOptions.map((d) => (
                   <MenuItem key={d} value={d}>
@@ -698,7 +748,11 @@ export default function DatasetFilesPage() {
             />
           </Paper>
 
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.2 }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ display: "block", mt: 1.2 }}
+          >
             Endpoint list: <code>{ENDPOINTS.listFiles(datasetId)}</code> • download:{" "}
             <code>{ENDPOINTS.downloadFile("{file_id}")}</code>
           </Typography>
@@ -706,7 +760,12 @@ export default function DatasetFilesPage() {
       </Paper>
 
       {/* DIALOG PREVIEW */}
-      <Dialog open={openPreview} onClose={() => setOpenPreview(false)} maxWidth="lg" fullWidth>
+      <Dialog
+        open={openPreview}
+        onClose={() => setOpenPreview(false)}
+        maxWidth="lg"
+        fullWidth
+      >
         <DialogTitle sx={{ fontWeight: 900 }}>
           Preview File Upload
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.3 }}>
@@ -727,7 +786,7 @@ export default function DatasetFilesPage() {
             }}
           >
             <Typography variant="body2" color="text.secondary">
-              Ukuran: <b>{formatSize(selectedFile?.file_size)}</b> • MIME:{" "}
+              Ukuran: <b>{formatSize(selectedFile?.file_size)}</b> • Tipe:{" "}
               <b>{selectedFile?.file_type || "-"}</b> • Status File:{" "}
               <b>{selectedFile?.is_active ? "Aktif" : "Nonaktif"}</b> • Dataset:{" "}
               <b>{ds?.nama_dataset || "-"}</b>

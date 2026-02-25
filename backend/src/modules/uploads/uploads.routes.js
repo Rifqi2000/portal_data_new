@@ -30,4 +30,11 @@ router.get(
   ctrl.downloadDatasetFile
 );
 
+// ✅ NEW: preview isi file (CSV/XLSX) by file_id (sinkron dengan unduhan)
+router.get(
+  "/file/:file_id/preview",
+  requireUuidParam("file_id"),
+  ctrl.previewFile
+);
+
 module.exports = router;

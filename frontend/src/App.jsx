@@ -84,11 +84,11 @@ export default function App() {
         />
 
         {/* 3. Lihat MetaData (detail) */}
-        <Route path="/datasets/:datasetId" element={<DatasetDetailPage />} />
+        <Route path="/datasets/:dataset_id" element={<DatasetDetailPage />} />
 
         {/* 4. Edit MetaData (ROLE BIDANG) */}
         <Route
-          path="/datasets/:datasetId/edit"
+          path="/datasets/:dataset_id/edit"
           element={
             <RequireRole allow={["BIDANG"]}>
               <DatasetEditPage />
